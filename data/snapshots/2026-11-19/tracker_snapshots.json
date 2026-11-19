@@ -1,0 +1,17 @@
+{
+  "source": "cache",
+  "fetched_at": "2026-11-19T00:12:36Z",
+  "oldest_seen": "2026-11-19T00:12:36Z",
+  "stale": false,
+  "items": [
+    {
+      "seen_at": "2026-11-19T00:12:36Z",
+      "rows": 915,
+      "distinct_club_ids": 908,
+      "duplicate_rows": 7,
+      "competitive": 30713,
+      "non_competitive": 19627,
+      "total": 50340
+    }
+  ]
+}

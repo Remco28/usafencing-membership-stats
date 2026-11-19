@@ -1,0 +1,146 @@
+{
+  "snapshot_date": "2026-11-19",
+  "tracker_fetched_at": "2026-11-19T00:12:36Z",
+  "usfa_fetched_at": "2026-11-19T00:14:04Z",
+  "tracker_raw_rows": 915,
+  "tracker_distinct_clubs": 908,
+  "duplicate_club_ids_merged": [
+    {
+      "club_id": "101509031",
+      "kept_name": "USA Fencing National Sports Medicine Team",
+      "dropped_names": [
+        "USA Fencing Sports Medicine Team"
+      ],
+      "row_count": 2,
+      "total": 52
+    },
+    {
+      "club_id": "100352440",
+      "kept_name": "Miami Fencing Academy",
+      "dropped_names": [
+        "Mia Fencing Academy North",
+        "Mia Fencing Academy Central"
+      ],
+      "row_count": 3,
+      "total": 66
+    },
+    {
+      "club_id": "100249597",
+      "kept_name": "Woodlands International Fencing Club",
+      "dropped_names": [
+        "Woodlands Fencing Academy"
+      ],
+      "row_count": 2,
+      "total": 52
+    },
+    {
+      "club_id": "100122548",
+      "kept_name": "The Fencing Knights at University Central Florida",
+      "dropped_names": [
+        "The Fencing Knights at UCF"
+      ],
+      "row_count": 2,
+      "total": 13
+    },
+    {
+      "club_id": "100033534",
+      "kept_name": "Washington University. St. Louis",
+      "dropped_names": [
+        "Washington University in St. Louis"
+      ],
+      "row_count": 2,
+      "total": 29
+    },
+    {
+      "club_id": "102455445",
+      "kept_name": "St. Mary School Simsbury - EGF",
+      "dropped_names": [
+        "St. Mary's School Simsbury - EGF"
+      ],
+      "row_count": 2,
+      "total": 14
+    }
+  ],
+  "usfa_directory_clubs": 652,
+  "totals": {
+    "competitive": 30713,
+    "non_competitive": 19627,
+    "total": 50340,
+    "comp_share_pct": 61.0
+  },
+  "coverage": {
+    "geocoded_clubs": 745,
+    "geocoded_competitive": 30185,
+    "geocoded_competitive_pct": 98.47,
+    "geocoded_total": 49192,
+    "geocoded_total_pct": 97.83,
+    "non_geographic_clubs": 2,
+    "non_geographic_competitive": 58,
+    "unlocated_clubs": 161,
+    "unlocated_competitive": 470,
+    "by_location_source": [
+      {
+        "location_source": "dataverse_cc0_archive",
+        "clubs": 80,
+        "competitive": 2217,
+        "total": 3319
+      },
+      {
+        "location_source": "non_geographic",
+        "clubs": 2,
+        "competitive": 58,
+        "total": 59
+      },
+      {
+        "location_source": "supplement_verified",
+        "clubs": 43,
+        "competitive": 1160,
+        "total": 2177
+      },
+      {
+        "location_source": "unlocated",
+        "clubs": 161,
+        "competitive": 470,
+        "total": 1089
+      },
+      {
+        "location_source": "usfa_directory_exact",
+        "clubs": 622,
+        "competitive": 26808,
+        "total": 43696
+      }
+    ]
+  },
+  "centers_of_mass": {
+    "competitive_fencers": {
+      "lat": 39.8666,
+      "lng": -91.7133
+    },
+    "total_fencers": {
+      "lat": 39.8607,
+      "lng": -91.0672
+    },
+    "major_event_stops": {
+      "lat": 39.1604,
+      "lng": -93.3067
+    },
+    "fencer_to_events_gap_miles": 98.0
+  },
+  "national_events": {
+    "seasons": "2021-22 through 2026-27",
+    "major_stops": 44,
+    "host_cities": 21,
+    "all_calendar_stops": 51
+  },
+  "snapshots_history": [
+    {
+      "seen_at": "2026-11-19T00:12:36Z",
+      "rows": 915,
+      "distinct_club_ids": 908,
+      "duplicate_rows": 7,
+      "competitive": 30713,
+      "non_competitive": 19627,
+      "total": 50340
+    }
+  ]
+}

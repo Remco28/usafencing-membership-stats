@@ -1,0 +1,22 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets & local env
+.env
+.env.local
+
+# Downloaded large raw upstream Census zips/xls (regenerable via `usaf-stats build-reference`)
+data/cache/
+
+# Node / Web build artifacts (Phase 2)
+web/node_modules/
+web/dist/
+
+# OS / Editor
+.DS_Store
+*.swp

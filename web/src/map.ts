@@ -1,0 +1,719 @@
+import { geoAlbersUsa, geoCircle, geoPath, type GeoPermissibleObjects } from 'd3-geo';
+import { select } from 'd3-selection';
+import 'd3-transition';
+import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom';
+import * as topojson from 'topojson-client';
+import type { Topology, GeometryCollection } from 'topojson-specification';
+
+import {
+  FIT_EXTENT,
+  LABEL_FONT_SIZE,
+  MAP_HEIGHT,
+  MAP_WIDTH,
+  STATE_ABBR_FILL,
+  hostStarRadius,
+  insetSeparatorPath,
+  planMapLabels,
+  planStateAbbr,
+  type Box,
+  type LabelPlacement,
+  type Obstacle,
+} from './mapLayout';
+import type {
+  AppState,
+  ClubRecord,
+  DatasetBundle,
+  MetroRecord,
+  Selection,
+} from './types';
+
+export { MAP_HEIGHT, MAP_WIDTH };
+
+/** Zoom level at which labels that yielded at 1x (to avoid collisions) reappear. */
+const HIDDEN_LABEL_ZOOM = 2.2;
+
+const FONT_SANS = "'IBM Plex Sans', system-ui, sans-serif";
+const FONT_MONO = "'IBM Plex Mono', ui-monospace, monospace";
+
+const BALANCE_COLORS = { fencers: '#163656', events: '#b42318' } as const;
+
+function labelStyle(p: LabelPlacement): { fill: string; leader: string } {
+  if (p.kind === 'com') {
+    const c = p.role === 'events' ? BALANCE_COLORS.events : BALANCE_COLORS.fencers;
+    return { fill: c, leader: c };
+  }
+  if (p.kind === 'host') return { fill: '#4f2710', leader: '#6e5232' };
+  return { fill: '#142a44', leader: '#3d546d' };
+}
+
+export function starPath(rOuter: number, rInner: number): string {
+  const pts: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? rOuter : rInner;
+    const angle = (Math.PI / 5) * i - Math.PI / 2;
+    pts.push(`${(Math.cos(angle) * r).toFixed(2)},${(Math.sin(angle) * r).toFixed(2)}`);
+  }
+  return `M${pts.join('L')}Z`;
+}
+
+export function colorForCompShare(share: number | null): string {
+  if (share === null || Number.isNaN(share)) return '#94a3b8';
+  if (share >= 0.72) return '#0f2e4f';
+  if (share >= 0.62) return '#1d5280';
+  if (share >= 0.52) return '#2d7a89';
+  if (share >= 0.40) return '#6b9071';
+  return '#d19a36';
+}
+
+export function colorForPerCapita(per100k: number): string {
+  if (per100k >= 25) return '#0f2e4f';
+  if (per100k >= 16) return '#1c4f7a';
+  if (per100k >= 10) return '#377aa1';
+  if (per100k >= 5) return '#6da0bd';
+  return '#a8c2d2';
+}
+
+export function metroRadius(m: MetroRecord, metric: AppState['metric']): number {
+  let val = 0;
+  let refMax = 5000;
+  let maxR = 26;
+  if (metric === 'competitive') {
+    val = m.competitive;
+    refMax = 5000;
+    maxR = 26;
+  } else if (metric === 'non_competitive') {
+    val = m.non_competitive;
+    refMax = 2200;
+    maxR = 24;
+  } else if (metric === 'total') {
+    val = m.total;
+    refMax = 7000;
+    maxR = 27;
+  } else if (metric === 'comp_per_100k') {
+    val = Math.max(0, m.comp_per_100k);
+    refMax = 70;
+    maxR = 22;
+  }
+  if (val <= 0) return 0;
+  return Math.max(2.4, Math.sqrt(val / refMax) * maxR);
+}
+
+export function clubRadius(c: ClubRecord, metric: AppState['metric']): number {
+  const val =
+    metric === 'non_competitive'
+      ? c.non_competitive
+      : metric === 'total'
+        ? c.total
+        : c.competitive;
+  if (val <= 0) return 0;
+  const refMax = metric === 'total' ? 560 : 375;
+  return Math.max(2.0, Math.sqrt(val / refMax) * 14.5);
+}
+
+export interface MapCallbacks {
+  onHover: (sel: Selection, clientX: number, clientY: number) => void;
+  onLeave: () => void;
+  onSelect: (sel: Selection) => void;
+}
+
+export class CensusMapController {
+  private svgEl: SVGSVGElement;
+  private projection = geoAlbersUsa();
+  private pathGen = geoPath(this.projection);
+  private zoomBehavior: ZoomBehavior<SVGSVGElement, unknown>;
+  private currentTransform: ZoomTransform = zoomIdentity;
+  private statesGeo: GeoPermissibleObjects;
+  private statesFeatures: Array<{ id: string; feature: GeoPermissibleObjects }>;
+  private nationGeo: GeoPermissibleObjects;
+  private dataset: DatasetBundle;
+  private callbacks: MapCallbacks;
+  private lastState: AppState | null = null;
+  private forceLabelScale: number | null = null;
+  private lastLabelScale = 1;
+
+  constructor(
+    svgEl: SVGSVGElement,
+    topoData: Topology,
+    dataset: DatasetBundle,
+    callbacks: MapCallbacks,
+  ) {
+    this.svgEl = svgEl;
+    this.dataset = dataset;
+    this.callbacks = callbacks;
+
+    const statesObj = topoData.objects.states as GeometryCollection;
+    const nationObj = topoData.objects.nation as GeometryCollection;
+    const statesFc = topojson.feature(topoData, statesObj);
+    this.statesGeo = statesFc;
+    this.statesFeatures = statesFc.features.map((f) => ({
+      id: String(f.id ?? '').padStart(2, '0'),
+      feature: f,
+    }));
+    this.nationGeo = topojson.feature(topoData, nationObj);
+
+    this.projection.fitExtent(FIT_EXTENT, this.nationGeo);
+
+    this.zoomBehavior = zoom<SVGSVGElement, unknown>()
+      .scaleExtent([1, 14])
+      .translateExtent([
+        [-120, -80],
+        [MAP_WIDTH + 120, MAP_HEIGHT + 80],
+      ])
+      .on('zoom', (event) => {
+        this.currentTransform = event.transform;
+        this.applyZoomTransform();
+      });
+
+    select(this.svgEl).call(this.zoomBehavior);
+  }
+
+  public getTransform(): ZoomTransform {
+    return this.currentTransform;
+  }
+
+  public getProjection() {
+    return this.projection;
+  }
+
+  public zoomIn(): void {
+    select(this.svgEl).transition().duration(220).call(this.zoomBehavior.scaleBy, 1.55);
+  }
+
+  public zoomOut(): void {
+    select(this.svgEl).transition().duration(220).call(this.zoomBehavior.scaleBy, 1 / 1.55);
+  }
+
+  public resetZoom(): void {
+    select(this.svgEl).transition().duration(260).call(this.zoomBehavior.transform, zoomIdentity);
+  }
+
+  public flyTo(lat: number, lng: number, targetScale = 4.2): void {
+    const pt = this.projection([lng, lat]);
+    if (!pt) return;
+    const t = zoomIdentity
+      .translate(MAP_WIDTH / 2 - pt[0] * targetScale, MAP_HEIGHT / 2 - pt[1] * targetScale)
+      .scale(targetScale);
+    select(this.svgEl).transition().duration(420).call(this.zoomBehavior.transform, t);
+  }
+
+  private applyZoomTransform(): void {
+    const g = this.svgEl.querySelector<SVGGElement>('#map-viewport');
+    if (!g) return;
+    g.setAttribute('transform', this.currentTransform.toString());
+    const k = this.currentTransform.k;
+
+    // Keep stroke widths and labels crisp as user zooms in
+    g.querySelectorAll<SVGElement>('[data-inv-scale="true"]').forEach((el) => {
+      const baseX = Number(el.dataset.x ?? '0');
+      const baseY = Number(el.dataset.y ?? '0');
+      const s = 1 / Math.pow(k, 0.72);
+      el.setAttribute('transform', `translate(${baseX.toFixed(2)},${baseY.toFixed(2)}) scale(${s.toFixed(3)})`);
+    });
+    g.querySelectorAll<SVGElement>('[data-zoom-show]').forEach((el) => {
+      const minK = Number(el.dataset.zoomShow ?? '1');
+      el.style.display = k >= minK ? '' : 'none';
+    });
+  }
+
+  /** Labels grow on narrow screens so they stay readable (~8.5 CSS px); the layout engine then drops whatever no longer fits. */
+  private computeLabelScale(): number {
+    if (this.forceLabelScale !== null) return this.forceLabelScale;
+    const w = this.svgEl.getBoundingClientRect().width;
+    if (!w) return 1;
+    const s = (8.5 / LABEL_FONT_SIZE) * (MAP_WIDTH / w);
+    return Math.min(2.4, Math.max(1, Number(s.toFixed(2))));
+  }
+
+  /** On-map zoom buttons (desktop) are a hard no-go zone for labels. */
+  private reservedRects(): Box[] {
+    if (this.forceLabelScale !== null) return [];
+    const ctrl = this.svgEl.parentElement?.querySelector<HTMLElement>('.map-zoom-controls');
+    if (!ctrl || getComputedStyle(ctrl).position !== 'absolute') return [];
+    const sr = this.svgEl.getBoundingClientRect();
+    if (!sr.width) return [];
+    const cr = ctrl.getBoundingClientRect();
+    const k = MAP_WIDTH / sr.width;
+    return [
+      {
+        x0: (cr.left - sr.left) * k - 6,
+        y0: (cr.top - sr.top) * k - 6,
+        x1: (cr.right - sr.left) * k + 6,
+        y1: (cr.bottom - sr.top) * k + 6,
+      },
+    ];
+  }
+
+  /** Re-run label layout when the map's on-screen width changes enough to need a different label size. */
+  public handleResize(): void {
+    if (!this.lastState) return;
+    if (Math.abs(this.computeLabelScale() - this.lastLabelScale) > 0.04) this.render(this.lastState);
+  }
+
+  /** Render at desktop label size with no on-map buttons reserved, clone it for export, then restore the live view. */
+  public renderForExport(state: AppState): SVGSVGElement {
+    this.forceLabelScale = 1;
+    try {
+      this.render(state);
+      return this.svgEl.cloneNode(true) as SVGSVGElement;
+    } finally {
+      this.forceLabelScale = null;
+      this.render(state);
+    }
+  }
+
+  private visibleMetros(state: AppState): Array<{ m: MetroRecord; r: number; pt: [number, number] }> {
+    return this.dataset.metros
+      .filter((m) => {
+        if (m.lat === null || m.lng === null) return false;
+        if (state.metric === 'comp_per_100k') {
+          return (m.pop_2025 ?? 0) >= 250_000 && m.competitive >= Math.max(10, state.minCount);
+        }
+        const val =
+          state.metric === 'non_competitive'
+            ? m.non_competitive
+            : state.metric === 'total'
+              ? m.total
+              : m.competitive;
+        return val > 0 && val >= state.minCount;
+      })
+      .map((m) => ({ m, r: metroRadius(m, state.metric), pt: this.projection([m.lng!, m.lat!]) }))
+      .filter((d): d is { m: MetroRecord; r: number; pt: [number, number] } => d.pt !== null && d.r > 0)
+      // Draw largest circles underneath smaller ones so every metro stays clickable
+      .sort((a, b) => b.r - a.r);
+  }
+
+  public render(state: AppState): void {
+    this.lastState = state;
+    const labelScale = this.computeLabelScale();
+    this.lastLabelScale = labelScale;
+    const svg = select(this.svgEl);
+    svg.selectAll('*').remove();
+    svg.attr('viewBox', `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`);
+
+    // Crisp white canvas background & hairline border
+    svg
+      .append('rect')
+      .attr('width', MAP_WIDTH)
+      .attr('height', MAP_HEIGHT)
+      .attr('fill', '#ffffff');
+
+    const frame = svg.append('g').attr('class', 'archival-frame').attr('pointer-events', 'none');
+    const pad = 10;
+    frame
+      .append('rect')
+      .attr('x', pad)
+      .attr('y', pad)
+      .attr('width', MAP_WIDTH - pad * 2)
+      .attr('height', MAP_HEIGHT - pad * 2)
+      .attr('fill', 'none')
+      .attr('stroke', '#cbd5e1')
+      .attr('stroke-width', 1);
+
+    const vp = svg.append('g').attr('id', 'map-viewport');
+
+    // 1. US States basemap
+    const landG = vp.append('g').attr('class', 'layer-states');
+    landG
+      .append('path')
+      .datum(this.nationGeo)
+      .attr('d', this.pathGen)
+      .attr('fill', '#eef2f6')
+      .attr('stroke', '#64748b')
+      .attr('stroke-width', 1.15)
+      .attr('vector-effect', 'non-scaling-stroke');
+
+    landG
+      .append('path')
+      .datum(this.statesGeo)
+      .attr('d', this.pathGen)
+      .attr('fill', 'none')
+      .attr('stroke', '#cbd5e1')
+      .attr('stroke-width', 0.85)
+      .attr('vector-effect', 'non-scaling-stroke');
+
+    // Dashed separator framing the Alaska & Hawaii insets (derived from their projected bounds)
+    landG
+      .append('path')
+      .attr('d', insetSeparatorPath((id) => this.stateBounds(id)))
+      .attr('fill', 'none')
+      .attr('stroke', '#cbd5e1')
+      .attr('stroke-dasharray', '3 3')
+      .attr('stroke-width', 0.85)
+      .attr('vector-effect', 'non-scaling-stroke');
+
+    // Plan every callout up front (2D collision-avoiding layout shared with the static plates)
+    const metros = state.unit === 'metros' ? this.visibleMetros(state) : [];
+    const metroMarkers = metros.map(({ m, r, pt }) => ({ key: m.cbsa_code, x: pt[0], y: pt[1], r }));
+    const placements = planMapLabels({
+      dataset: this.dataset,
+      cfg: state,
+      project: (p) => this.projection(p),
+      metroMarkers,
+      labelScale,
+      reserved: this.reservedRects(),
+    });
+
+    // State abbreviations: shown at 1x only where they touch no marker or label; revealed on zoom.
+    if (state.showStateAbbr) {
+      const obstacles: Obstacle[] = metroMarkers.map((mk) => ({ x: mk.x, y: mk.y, r: mk.r + 2 }));
+      if (state.showHosts) {
+        for (const h of this.dataset.host_cities) {
+          const pt = this.projection([h.lng, h.lat]);
+          if (pt) obstacles.push({ x: pt[0], y: pt[1], r: hostStarRadius(h.major_stops) + 2 });
+        }
+      }
+      for (const p of placements) if (p.kind === 'com') obstacles.push({ x: p.x, y: p.y, r: 11 });
+      const abbrs = planStateAbbr({
+        states: this.statesFeatures,
+        centroid: (f) => this.pathGen.centroid(f) as [number, number],
+        obstacles,
+        labelBoxes: placements.filter((p) => p.visible).map((p) => p.box),
+      });
+      const crowded = labelScale > 1.25;
+      const abbrG = vp.append('g').attr('class', 'layer-state-abbr').attr('pointer-events', 'none');
+      for (const a of abbrs) {
+        const txt = abbrG
+          .append('text')
+          .attr('x', a.x.toFixed(1))
+          .attr('y', a.y.toFixed(1))
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'central')
+          .attr('fill', STATE_ABBR_FILL)
+          .attr('font-family', FONT_MONO)
+          .attr('font-size', '9px')
+          .attr('font-weight', '600')
+          .attr('letter-spacing', '0.06em')
+          .text(a.abbr);
+        if (!a.visible || crowded) txt.attr('data-zoom-show', '2.1');
+      }
+    }
+
+    // 2. Straight-line catchment rings (150 mi & 500 mi) sit beneath every marker and label
+    if (state.ringHostKey) {
+      const host = this.dataset.host_cities.find(
+        (h) => `${h.city}, ${h.state}` === state.ringHostKey,
+      );
+      if (host) {
+        const ringG = vp.append('g').attr('class', 'layer-rings').attr('pointer-events', 'none');
+        const rings: Array<{ miles: number; dash: string; fillOpacity: number }> = [
+          { miles: 500, dash: '5 4', fillOpacity: 0.05 },
+          { miles: 150, dash: 'none', fillOpacity: 0.09 },
+        ];
+        for (const r of rings) {
+          const deg = r.miles / 69.047;
+          const circleGeo = geoCircle().center([host.lng, host.lat]).radius(deg)();
+          ringG
+            .append('path')
+            .datum(circleGeo)
+            .attr('d', this.pathGen)
+            .attr('fill', '#b42318')
+            .attr('fill-opacity', r.fillOpacity)
+            .attr('stroke', '#b42318')
+            .attr('stroke-opacity', 0.6)
+            .attr('stroke-width', 1.2)
+            .attr('stroke-dasharray', r.dash)
+            .attr('vector-effect', 'non-scaling-stroke');
+        }
+      }
+    }
+
+    // 3. Primary data marks (Metros OR Individual Clubs)
+    const dataG = vp.append('g').attr('class', 'layer-data');
+    if (state.unit === 'metros') {
+      this.renderMetros(dataG, state, metros);
+    } else {
+      this.renderClubs(dataG, state);
+    }
+
+    // 4. National Event Host Cities (2021-27, hosted & scheduled)
+    if (state.showHosts) {
+      this.renderHosts(vp.append('g').attr('class', 'layer-hosts'), state);
+    }
+
+    // 5. Geographic Balance Points (Competitive Fencers vs. National Event Stops)
+    if (state.showCentersOfMass) {
+      this.renderCentersOfMass(vp.append('g').attr('class', 'layer-com'));
+    }
+
+    // 6. Collision-free labels, always layered above every dot, star, and ring
+    this.renderLabels(vp.append('g').attr('class', 'layer-labels').attr('pointer-events', 'none'), placements);
+
+    this.applyZoomTransform();
+  }
+
+  private stateBounds(id: string): [[number, number], [number, number]] | null {
+    const sf = this.statesFeatures.find((s) => s.id === id);
+    return sf ? (this.pathGen.bounds(sf.feature) as [[number, number], [number, number]]) : null;
+  }
+
+  private renderMetros(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    state: AppState,
+    metros: Array<{ m: MetroRecord; r: number; pt: [number, number] }>,
+  ): void {
+    const q = state.searchQuery.trim().toLowerCase();
+
+    for (const { m, r, pt } of metros) {
+      let fill = '#164677';
+      if (state.colorMode === 'comp_share') fill = colorForCompShare(m.comp_share);
+      else if (state.colorMode === 'per_capita') fill = colorForPerCapita(m.comp_per_100k);
+
+      const isSelected =
+        state.selection?.kind === 'metro' && state.selection.data.cbsa_code === m.cbsa_code;
+      const isMatch = q.length > 0 && m.cbsa_name.toLowerCase().includes(q);
+      const dimmed = q.length > 0 && !isMatch;
+
+      const circle = g
+        .append('circle')
+        .attr('cx', pt[0].toFixed(2))
+        .attr('cy', pt[1].toFixed(2))
+        .attr('r', r.toFixed(2))
+        .attr('fill', fill)
+        .attr('fill-opacity', dimmed ? 0.16 : isSelected ? 0.92 : 0.72)
+        .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
+        .attr('stroke-width', isSelected ? 2.2 : isMatch ? 1.8 : 0.9)
+        .attr('vector-effect', 'non-scaling-stroke')
+        .style('cursor', 'pointer');
+
+      circle
+        .on('mouseenter', (ev: MouseEvent) => {
+          circle.attr('fill-opacity', 0.95).attr('stroke', '#14191f').attr('stroke-width', 1.8);
+          this.callbacks.onHover({ kind: 'metro', data: m }, ev.clientX, ev.clientY);
+        })
+        .on('mousemove', (ev: MouseEvent) => {
+          this.callbacks.onHover({ kind: 'metro', data: m }, ev.clientX, ev.clientY);
+        })
+        .on('mouseleave', () => {
+          circle
+            .attr('fill-opacity', dimmed ? 0.16 : isSelected ? 0.92 : 0.72)
+            .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
+            .attr('stroke-width', isSelected ? 2.2 : isMatch ? 1.8 : 0.9);
+          this.callbacks.onLeave();
+        })
+        .on('click', (ev: MouseEvent) => {
+          ev.stopPropagation();
+          this.callbacks.onSelect({ kind: 'metro', data: m });
+        });
+    }
+  }
+
+  private renderClubs(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    state: AppState,
+  ): void {
+    const q = state.searchQuery.trim().toLowerCase();
+    const clubs = this.dataset.clubs
+      .filter((c) => {
+        if (state.weapon === 'epee' && !c.has_epee) return false;
+        if (state.weapon === 'foil' && !c.has_foil) return false;
+        if (state.weapon === 'saber' && !c.has_saber) return false;
+        if (state.weapon === 'para' && !c.has_para) return false;
+        const val =
+          state.metric === 'non_competitive'
+            ? c.non_competitive
+            : state.metric === 'total'
+              ? c.total
+              : c.competitive;
+        return val > 0 && val >= state.minCount;
+      })
+      .map((c) => ({ c, r: clubRadius(c, state.metric), pt: this.projection([c.lng, c.lat]) }))
+      .filter((d): d is { c: ClubRecord; r: number; pt: [number, number] } => d.pt !== null && d.r > 0)
+      .sort((a, b) => b.r - a.r);
+
+    for (const { c, r, pt } of clubs) {
+      const fill = state.colorMode === 'comp_share' ? colorForCompShare(c.comp_share) : '#164677';
+      const isSelected =
+        state.selection?.kind === 'club' && state.selection.data.club_id === c.club_id;
+      const isMatch =
+        q.length > 0 &&
+        (c.name.toLowerCase().includes(q) ||
+          (c.city ?? '').toLowerCase().includes(q) ||
+          c.abbreviation.toLowerCase().includes(q));
+      const dimmed = q.length > 0 && !isMatch;
+
+      const circle = g
+        .append('circle')
+        .attr('cx', pt[0].toFixed(2))
+        .attr('cy', pt[1].toFixed(2))
+        .attr('r', r.toFixed(2))
+        .attr('fill', fill)
+        .attr('fill-opacity', dimmed ? 0.14 : isSelected ? 0.95 : 0.74)
+        .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
+        .attr('stroke-width', isSelected ? 2.0 : isMatch ? 1.6 : 0.75)
+        .attr('vector-effect', 'non-scaling-stroke')
+        .style('cursor', 'pointer');
+
+      circle
+        .on('mouseenter', (ev: MouseEvent) => {
+          circle.attr('fill-opacity', 0.98).attr('stroke', '#14191f').attr('stroke-width', 1.7);
+          this.callbacks.onHover({ kind: 'club', data: c }, ev.clientX, ev.clientY);
+        })
+        .on('mousemove', (ev: MouseEvent) => {
+          this.callbacks.onHover({ kind: 'club', data: c }, ev.clientX, ev.clientY);
+        })
+        .on('mouseleave', () => {
+          circle
+            .attr('fill-opacity', dimmed ? 0.14 : isSelected ? 0.95 : 0.74)
+            .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
+            .attr('stroke-width', isSelected ? 2.0 : isMatch ? 1.6 : 0.75);
+          this.callbacks.onLeave();
+        })
+        .on('click', (ev: MouseEvent) => {
+          ev.stopPropagation();
+          this.callbacks.onSelect({ kind: 'club', data: c });
+        });
+    }
+  }
+
+  private renderHosts(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    state: AppState,
+  ): void {
+    for (const h of this.dataset.host_cities) {
+      const pt = this.projection([h.lng, h.lat]);
+      if (!pt) continue;
+      const key = `${h.city}, ${h.state}`;
+      const isSelected =
+        (state.selection?.kind === 'host' &&
+          `${state.selection.data.city}, ${state.selection.data.state}` === key) ||
+        state.ringHostKey === key;
+
+      const rOuter = hostStarRadius(h.major_stops);
+      const rInner = rOuter * 0.44;
+
+      const node = g
+        .append('g')
+        .attr('data-inv-scale', 'true')
+        .attr('data-x', pt[0].toFixed(2))
+        .attr('data-y', pt[1].toFixed(2))
+        .attr('transform', `translate(${pt[0].toFixed(2)},${pt[1].toFixed(2)})`)
+        .style('cursor', 'pointer');
+
+      if (isSelected) {
+        node
+          .append('circle')
+          .attr('r', (rOuter + 4.5).toFixed(1))
+          .attr('fill', 'none')
+          .attr('stroke', '#b42318')
+          .attr('stroke-width', 1.6)
+          .attr('stroke-dasharray', '3 2');
+      }
+
+      node
+        .append('path')
+        .attr('d', starPath(rOuter, rInner))
+        .attr('fill', isSelected ? '#b42318' : '#d97706')
+        .attr('stroke', '#2a1c10')
+        .attr('stroke-width', 1.0);
+
+      node
+        .on('mouseenter', (ev: MouseEvent) => {
+          this.callbacks.onHover({ kind: 'host', data: h }, ev.clientX, ev.clientY);
+        })
+        .on('mousemove', (ev: MouseEvent) => {
+          this.callbacks.onHover({ kind: 'host', data: h }, ev.clientX, ev.clientY);
+        })
+        .on('mouseleave', () => this.callbacks.onLeave())
+        .on('click', (ev: MouseEvent) => {
+          ev.stopPropagation();
+          this.callbacks.onSelect({ kind: 'host', data: h });
+        });
+    }
+  }
+
+  private renderCentersOfMass(g: ReturnType<typeof select<SVGGElement, unknown>>): void {
+    const com = this.dataset.summary.centers_of_mass;
+    if (!com.competitive_fencers || !com.major_event_stops) return;
+    const pF = this.projection([com.competitive_fencers.lng, com.competitive_fencers.lat]);
+    const pE = this.projection([com.major_event_stops.lng, com.major_event_stops.lat]);
+    if (!pF || !pE) return;
+
+    g.append('line')
+      .attr('x1', pF[0].toFixed(2))
+      .attr('y1', pF[1].toFixed(2))
+      .attr('x2', pE[0].toFixed(2))
+      .attr('y2', pE[1].toFixed(2))
+      .attr('stroke', '#2b3440')
+      .attr('stroke-width', 1.2)
+      .attr('stroke-dasharray', '2.5 2')
+      .attr('vector-effect', 'non-scaling-stroke');
+
+    const drawReticle = (pt: [number, number], color: string) => {
+      const node = g
+        .append('g')
+        .attr('data-inv-scale', 'true')
+        .attr('data-x', pt[0].toFixed(2))
+        .attr('data-y', pt[1].toFixed(2))
+        .attr('transform', `translate(${pt[0].toFixed(2)},${pt[1].toFixed(2)})`)
+        .attr('pointer-events', 'none');
+      node
+        .append('circle')
+        .attr('r', 6)
+        .attr('fill', '#ffffff')
+        .attr('fill-opacity', 0.85)
+        .attr('stroke', color)
+        .attr('stroke-width', 1.6);
+      node
+        .append('path')
+        .attr('d', 'M -9 0 L 9 0 M 0 -9 L 0 9')
+        .attr('stroke', color)
+        .attr('stroke-width', 1.2);
+    };
+
+    drawReticle(pF, BALANCE_COLORS.fencers);
+    drawReticle(pE, BALANCE_COLORS.events);
+  }
+
+  private renderLabels(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    placements: LabelPlacement[],
+  ): void {
+    for (const p of placements) {
+      const node = g
+        .append('g')
+        .attr('data-inv-scale', 'true')
+        .attr('data-x', p.x.toFixed(2))
+        .attr('data-y', p.y.toFixed(2))
+        .attr('transform', `translate(${p.x.toFixed(2)},${p.y.toFixed(2)})`);
+      if (!p.visible) node.attr('data-zoom-show', String(HIDDEN_LABEL_ZOOM));
+
+      const style = labelStyle(p);
+      if (p.leader) {
+        node
+          .append('line')
+          .attr('x1', p.leader[0][0].toFixed(1))
+          .attr('y1', p.leader[0][1].toFixed(1))
+          .attr('x2', p.leader[1][0].toFixed(1))
+          .attr('y2', p.leader[1][1].toFixed(1))
+          .attr('stroke', style.leader)
+          .attr('stroke-width', 0.75);
+      }
+
+      // Single line, or (in crowded spots) a compact stack: city name over "N stops"
+      const lines = p.lines ?? [p.text];
+      const lineH = p.fontSize * 1.12;
+      lines.forEach((line, i) => {
+        node
+          .append('text')
+          .attr('x', p.dx.toFixed(1))
+          .attr('y', (p.dy + (i - (lines.length - 1) / 2) * lineH).toFixed(1))
+          .attr('text-anchor', p.anchor)
+          .attr('dominant-baseline', 'central')
+          .attr('fill', style.fill)
+          .attr('font-family', p.mono ? FONT_MONO : FONT_SANS)
+          .attr('font-size', `${p.fontSize.toFixed(2)}px`)
+          .attr('font-weight', i === 0 ? '600' : '500')
+          .attr('letter-spacing', p.letterSpacingEm ? `${p.letterSpacingEm}em` : null)
+          .attr('paint-order', 'stroke')
+          .attr('stroke', '#ffffff')
+          .attr('stroke-width', (p.fontSize * 0.36).toFixed(2))
+          .attr('stroke-linejoin', 'round')
+          .text(line);
+      });
+    }
+  }
+
+  public getLastState(): AppState | null {
+    return this.lastState;
+  }
+}

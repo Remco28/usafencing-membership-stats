@@ -1,0 +1,47 @@
+club_id,club_name,is_geographic,city,state,county,lat,lng,source_note
+100303671,PISTE Fencing Academy,true,Brooklyn,NY,Kings County,40.6512,-73.8806,pisteacademy.org (1360 Granville Payne Ave Brooklyn NY)
+100029612,Kansas City Fencing Center,true,Lenexa,KS,Johnson County,38.9708,-94.7358,kcfencing.org (12932 W 87th St Pkwy Lenexa KS)
+100861032,Badger Fencing Club,true,Madison,WI,Dane County,43.0604,-89.5094,badgerfencingclub.com (7333 Mineral Point Rd Madison WI)
+100029311,Birmingham Fencing Club,true,Hoover,AL,Jefferson County,33.4054,-86.8114,fencingclub.org (1581 Montgomery Hwy Hoover AL)
+100759847,Revolution Fencing Center,true,West Chester,PA,Chester County,39.9693,-75.5902,fencefap.com (1220 Ward Ave West Chester PA)
+100122876,Epic Fencing Club,true,Alpharetta,GA,Fulton County,34.0734,-84.2812,epicfencingclubatlanta.com (4150 Old Milton Pkwy Alpharetta GA)
+100304258,Dragon Heart Fencing,true,Katy,TX,Harris County,29.7764,-95.7523,dragonheartfencing.com (510 S Mason Rd Katy TX)
+101509031,USA Fencing National Sports Medicine Team,false,,,,,,National traveling medical staff (non-geographic affiliation)
+100293732,Frisco Fencing Academy,true,Frisco,TX,Collin County,33.1507,-96.8236,Frisco TX club
+100352440,Miami Fencing Academy,true,Miami,FL,Miami-Dade County,25.7798,-80.2564,miafencing.com (801 NW 37th Ave Miami FL)
+100312251,Orlando Fencing Sports Center LLC,true,Orlando,FL,Orange County,28.4978,-81.4342,orlandofencingsports.com (4500 Vineland Rd Orlando FL)
+100124179,Central Arkansas Fencing Club,true,Little Rock,AR,Pulaski County,34.7568,-92.2994,Central Arkansas FC (2200 Kavanaugh Blvd Little Rock AR)
+100079709,Rockville Fencing Academy,true,Rockville,MD,Montgomery County,39.0928,-77.1528,urfencing.com (15221 Display Ct Rockville MD)
+100261845,Sword Masters Club Orlando,true,Orlando,FL,Orange County,28.5234,-81.2464,swordmastersorlando.com (1915 S Dean Rd Orlando FL)
+100025307,Infinity Fencing Alliance,true,Woolwich,NJ,Gloucester County,39.7549,-75.3497,infinityfencingalliance.com (50 Paulsboro Rd Woolwich NJ)
+100102875,"Fencing Illini, University of Illinois",true,Urbana,IL,Champaign County,40.1020,-88.2272,University of Illinois Urbana-Champaign
+100025014,University Of Colorado Boulder Club,true,Boulder,CO,Boulder County,40.0076,-105.2659,University of Colorado Boulder
+100025180,"Stamford Fencing Center, LLC",true,Stamford,CT,Fairfield County,41.0534,-73.5387,Stamford CT club
+100025438,College of William & Mary Fencing Club,true,Williamsburg,VA,Williamsburg city,37.2707,-76.7075,College of William & Mary
+100025365,Bryn Mawr College Fencing Club,true,Bryn Mawr,PA,Montgomery County,40.0265,-75.3135,Bryn Mawr College
+100055808,Syracuse Musketeers Fencing,true,Syracuse,NY,Onondaga County,43.0481,-76.1474,Syracuse NY club
+100102750,Gryphon Fencing,true,Yorba Linda,CA,Orange County,33.8886,-117.8131,gryphonfencing.com (Yorba Linda / Placentia CA)
+100122084,Yale University Fencing NCAA,true,New Haven,CT,New Haven County,41.3163,-72.9223,Yale University
+100083348,University of Wisconsin-Madison,true,Madison,WI,Dane County,43.0766,-89.4125,University of Wisconsin-Madison
+100030679,Texas A&M University Fencing,true,College Station,TX,Brazos County,30.6187,-96.3365,Texas A&M University
+100271603,Northeastern University Club Fencing,true,Boston,MA,Suffolk County,42.3398,-71.0892,Northeastern University
+100025152,Fairfax Fencers LLC,true,Chantilly,VA,Fairfax County,38.8868,-77.4452,fairfaxfencers.com (4433 Brookfield Corporate Dr Chantilly VA)
+100096472,Fencing Club At NC State,true,Raleigh,NC,Wake County,35.7847,-78.6821,North Carolina State University
+100123349,University Of Calif/Santa Barbara (UCSB),true,Santa Barbara,CA,Santa Barbara County,34.4140,-119.8489,UC Santa Barbara
+100358644,Nittany Fencing Academy,true,State College,PA,Centre County,40.8226,-77.8118,Nittany Fencing Academy (2901 E College Ave State College PA)
+100953748,Duel Fencing Club,true,North Chicago,IL,Lake County,42.3256,-87.8412,duelfencingclub.com (2217 MLK Jr Dr North Chicago IL)
+100128173,Doral Fencing Club,true,Doral,FL,Miami-Dade County,25.8195,-80.3553,Doral FL club
+100128001,Peninsula Fencing Academy,true,Belmont,CA,San Mateo County,37.5236,-122.2758,peninsulafencingacademy.com (555 O'Neill Ave Belmont CA)
+100123499,Binghamton University Fencing Club,true,Vestal,NY,Broome County,42.0894,-75.9695,Binghamton University
+100348225,Space Coast Olympic Fencing,true,Rockledge,FL,Brevard County,28.3247,-80.7259,Space Coast Olympic Fencing (5565 Schenck Ave Rockledge FL)
+100128017,Fencing Club at Indiana University,true,Bloomington,IN,Monroe County,39.1700,-86.5230,Indiana University Bloomington
+100122099,Princeton University NCAA,true,Princeton,NJ,Mercer County,40.3431,-74.6551,Princeton University
+100102892,Cambridge Fencing Center,true,Cambridge,MA,Middlesex County,42.3584,-71.0962,Cambridge Fencing Center (120 Vassar St Cambridge MA)
+100122102,University Of Pennsylvania NCAA,true,Philadelphia,PA,Philadelphia County,39.9522,-75.1932,University of Pennsylvania
+100063201,Clemson University Fencing Club,true,Clemson,SC,Pickens County,34.6769,-82.8374,Clemson University
+100029470,University of Southern California Trojan Fencing Club,true,Los Angeles,CA,Los Angeles County,34.0224,-118.2851,University of Southern California
+100261739,University of California Davis,true,Davis,CA,Yolo County,38.5382,-121.7617,University of California Davis
+100102876,George Mason University Fencing Club,true,Fairfax,VA,Fairfax County,38.8315,-77.3121,George Mason University
+100029280,Boston University Fencing Club,true,Boston,MA,Suffolk County,42.3505,-71.1054,Boston University
+100123542,University Of Pittsburgh,true,Pittsburgh,PA,Allegheny County,40.4444,-79.9608,University of Pittsburgh
+102504640,Nam Hyun Hee Fencing Academy,false,,,,,,Overseas club in Suwon-si South Korea (AP military/overseas code; USFA geocoder defaulted to US centroid in Colorado)

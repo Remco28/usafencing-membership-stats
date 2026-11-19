@@ -1,0 +1,22 @@
+city,state,lat,lng,major_stops,seasons,events,sn_count,jo_count,nac_count,cbsa_code,weighted_mean_comp_miles,weighted_mean_total_miles,comp_within_150mi,comp_within_150mi_pct,comp_within_500mi,comp_within_500mi_pct
+Salt Lake City,UT,40.7608,-111.891,5,"2021-22, 2022-23, 2023-24, 2025-26, 2026-27",Junior Olympic Championships | December NAC | April NAC / Div. I & Para National Championships | October NAC | Summer Nationals & July Challenge,1,1,3,41620,1364.6,1376.9,196,0.6,1321,4.4
+Richmond,VA,37.5407,-77.436,4,"2021-22, 2023-24, 2025-26, 2026-27",March NAC | December SJCC & Division I NAC | April NAC & Div. I / Para Championships | February NAC,0,0,4,40060,996.9,962.5,2703,9.0,14968,49.6
+Charlotte,NC,35.2271,-80.8431,3,"2021-22, 2023-24, 2024-25",Div. I / Para National Championships & April NAC | Junior Olympics & Para NAC | Junior Olympic Championships,0,2,1,16740,1007.4,972.9,1051,3.5,7613,25.2
+Columbus,OH,39.9612,-82.9988,3,"2021-22, 2023-24, 2026-27",December NAC | Summer Nationals & July Challenge | November NAC,1,0,2,18140,925.4,894.8,637,2.1,13951,46.2
+Fort Worth,TX,32.7555,-97.3308,3,"2022-23, 2023-24, 2025-26",Parafencing National Championships & March NAC | November NAC | November NAC,0,0,3,19100,1134.9,1127.9,577,1.9,2609,8.6
+Atlantic City,NJ,39.3643,-74.4229,2,"2024-25, 2026-27",October NAC | March NAC,0,0,2,12100,1032.0,1002.1,7513,24.9,13165,43.6
+Cincinnati,OH,39.1031,-84.512,2,"2025-26, 2026-27",February NAC | April NAC & Div. I / Para Championships,0,0,2,17140,926.1,896.2,702,2.3,8663,28.7
+Cleveland,OH,41.4993,-81.6944,2,"2024-25, 2025-26",March NAC | March NAC,0,0,2,17410,939.3,909.5,1112,3.7,13788,45.7
+Kansas City,MO,39.0997,-94.5786,2,"2024-25, 2025-26",January NAC | Junior Olympic Championships,0,1,1,28140,1008.5,991.6,172,0.6,3247,10.8
+Louisville,KY,38.2527,-85.7585,2,"2022-23, 2024-25",January NAC | November NAC,0,0,2,31140,933.6,904.8,441,1.5,7896,26.2
+Minneapolis,MN,44.9778,-93.265,2,"2021-22, 2022-23",Summer Nationals & July Challenge | October NAC,1,0,1,33460,1058.6,1041.5,298,1.0,2353,7.8
+Orlando,FL,28.5383,-81.3792,2,"2023-24, 2026-27",October NAC | October NAC,0,0,2,36740,1266.1,1235.6,593,2.0,2474,8.2
+Portland,OR,45.5152,-122.6784,2,"2023-24, 2025-26",March NAC | Summer Nationals & July Challenge,1,0,1,38900,1747.5,1769.5,1149,3.8,1864,6.2
+San Jose,CA,37.3382,-121.8863,2,"2021-22, 2023-24",January NAC | January NAC,0,0,2,41940,1693.3,1725.2,2770,9.2,6164,20.4
+St. Louis,MO,38.627,-90.1994,2,"2021-22, 2022-23",October NAC | Div. I National Championships & April NAC,0,0,2,41180,958.3,935.0,238,0.8,5098,16.9
+Atlanta,GA,33.749,-84.388,1,2024-25,December SJCC & Parafencing NAC,0,0,1,12060,1024.2,994.4,1091,3.6,4168,13.8
+Denver,CO,39.7392,-104.9903,1,2022-23,Junior Olympic Championships,0,1,0,19740,1194.8,1195.1,629,2.1,1103,3.7
+Los Angeles,CA,34.0522,-118.2437,1,2024-25,April NAC & Div. I / Para Championships,0,0,1,31080,1606.8,1640.4,3092,10.2,6389,21.2
+Milwaukee,WI,43.0389,-87.9065,1,2024-25,Summer Nationals & July Challenge,1,0,0,33340,967.1,942.9,1357,4.5,4052,13.4
+Oklahoma City,OK,35.4676,-97.5164,1,2026-27,Junior Olympics & Para NAC,0,1,0,36420,1084.4,1075.0,48,0.2,3297,10.9
+Phoenix,AZ,33.4484,-112.074,1,2022-23,Summer Nationals & July Challenge,1,0,0,38060,1442.7,1462.8,306,1.0,3823,12.7

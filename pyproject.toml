@@ -1,0 +1,34 @@
+[project]
+name = "usafencing-membership-stats"
+version = "0.1.0"
+description = "Long-term open dataset, spatial analysis, static infographics, and interactive explorer for USA Fencing club membership and national event geography."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "openpyxl>=3.1.5",
+    "xlrd>=2.0.1",
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+    "matplotlib>=3.9.0",
+    "shapely>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+usaf-stats = "usaf_stats.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/usaf_stats"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
