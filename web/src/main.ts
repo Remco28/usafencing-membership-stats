@@ -22,6 +22,13 @@ import type {
 } from './types';
 
 type TableTab = 'metros' | 'hosts' | 'clubs';
+type SearchHit = {
+  kind: 'club' | 'metro' | 'host';
+  id: string;
+  title: string;
+  sub: string;
+  stat: string;
+};
 
 const SOURCE_LABELS: Record<string, string> = {
   usfa_directory_exact: 'USA Fencing Public Directory',
@@ -127,11 +134,7 @@ class FencingMapApp {
   private renderRaf: number | null = null;
   private filterNotice: string | null = null;
   private searchHighlightIdx = -1;
-  private searchHits: Array<
-    | { kind: 'club'; id: string; title: string; sub: string; stat: string }
-    | { kind: 'metro'; id: string; title: string; sub: string; stat: string }
-    | { kind: 'host'; id: string; title: string; sub: string; stat: string }
-  > = [];
+  private searchHits: SearchHit[] = [];
 
   // Cached element handles
   private mapSvgEl!: SVGSVGElement;
@@ -970,7 +973,7 @@ class FencingMapApp {
 
     const metroExact = metroHits.some((m) => m.title.toLowerCase().startsWith(q));
     const clubExact = clubHits.some((c) => c.title.toLowerCase().startsWith(q));
-    const groups: Array<{ label: string; items: typeof this.searchHits }> =
+    const groups: Array<{ label: string; items: SearchHit[] }> =
       metroExact && !clubExact
         ? [
             { label: 'Metro Areas', items: metroHits },
@@ -993,7 +996,7 @@ class FencingMapApp {
     }
 
     let idx = 0;
-    const renderGroup = (label: string, items: typeof this.searchHits) => {
+    const renderGroup = (label: string, items: SearchHit[]) => {
       if (items.length === 0) return '';
       return `
         <div class="search-group-head">${label}</div>
