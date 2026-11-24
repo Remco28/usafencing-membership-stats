@@ -567,6 +567,32 @@ export class CensusMapController {
             .attr('stroke-width', 1.2)
             .attr('stroke-dasharray', r.dash)
             .attr('vector-effect', 'non-scaling-stroke');
+
+          // Place a crisp distance label at the northernmost point of each ring arc
+          const northPt = this.projection([host.lng, Math.min(49, host.lat + deg)]);
+          if (northPt) {
+            const lbl = ringG
+              .append('g')
+              .attr('data-inv-scale', 'true')
+              .attr('data-x', northPt[0].toFixed(2))
+              .attr('data-y', northPt[1].toFixed(2))
+              .attr('transform', `translate(${northPt[0].toFixed(2)},${northPt[1].toFixed(2)})`);
+            lbl
+              .append('text')
+              .attr('x', 0)
+              .attr('y', -3)
+              .attr('text-anchor', 'middle')
+              .attr('dominant-baseline', 'auto')
+              .attr('fill', '#991b1b')
+              .attr('font-family', FONT_MONO)
+              .attr('font-size', '8px')
+              .attr('font-weight', '600')
+              .attr('paint-order', 'stroke')
+              .attr('stroke', '#ffffff')
+              .attr('stroke-width', '2.8')
+              .attr('stroke-linejoin', 'round')
+              .text(`${r.miles} mi`);
+          }
         }
       }
     }
@@ -595,18 +621,20 @@ export class CensusMapController {
 
     // 6. Zoom-in city anchors & club names (hidden at 1x and exports; appear smoothly as user zooms in)
     if (this.forceLabelScale === null) {
+      const clubLabelBoxes =
+        state.unit === 'clubs'
+          ? this.renderZoomClubLabels(
+              vp.append('g').attr('class', 'layer-zoom-clubs').attr('pointer-events', 'none'),
+              visibleClubs,
+              clubSpread,
+              state,
+            )
+          : [];
       this.renderZoomCityAnchors(
         vp.append('g').attr('class', 'layer-zoom-cities').attr('pointer-events', 'none'),
         placements,
+        clubLabelBoxes,
       );
-      if (state.unit === 'clubs') {
-        this.renderZoomClubLabels(
-          vp.append('g').attr('class', 'layer-zoom-clubs').attr('pointer-events', 'none'),
-          visibleClubs,
-          clubSpread,
-          state,
-        );
-      }
     }
 
     // 7. Collision-free labels, always layered above every dot, star, and ring
@@ -713,6 +741,27 @@ export class CensusMapController {
       const dimmed = q.length > 0 && !isMatch;
       const off = spread.get(c.club_id);
 
+      if (isSelected) {
+        // High-contrast double selection halo so selection never blends with fill colors
+        const halo = g
+          .append('circle')
+          .attr('cx', pt[0].toFixed(2))
+          .attr('cy', pt[1].toFixed(2))
+          .attr('r', (r + 3.2).toFixed(2))
+          .attr('data-base-r', (r + 3.2).toFixed(2))
+          .attr('data-scale-exp', '0.74')
+          .attr('data-base-x', pt[0].toFixed(2))
+          .attr('data-base-y', pt[1].toFixed(2))
+          .attr('fill', 'none')
+          .attr('stroke', '#0f172a')
+          .attr('stroke-width', 2.2)
+          .attr('vector-effect', 'non-scaling-stroke')
+          .attr('pointer-events', 'none');
+        if (off && (off[0] !== 0 || off[1] !== 0)) {
+          halo.attr('data-spread-x', off[0].toFixed(2)).attr('data-spread-y', off[1].toFixed(2));
+        }
+      }
+
       const circle = g
         .append('circle')
         .attr('cx', pt[0].toFixed(2))
@@ -723,9 +772,9 @@ export class CensusMapController {
         .attr('data-base-x', pt[0].toFixed(2))
         .attr('data-base-y', pt[1].toFixed(2))
         .attr('fill', fill)
-        .attr('fill-opacity', dimmed ? 0.14 : isSelected ? 0.95 : 0.74)
-        .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
-        .attr('stroke-width', isSelected ? 2.0 : isMatch ? 1.6 : 0.75)
+        .attr('fill-opacity', dimmed ? 0.14 : isSelected ? 0.98 : 0.74)
+        .attr('stroke', isSelected ? '#ffffff' : isMatch ? '#b42318' : '#ffffff')
+        .attr('stroke-width', isSelected ? 2.2 : isMatch ? 1.8 : 0.75)
         .attr('vector-effect', 'non-scaling-stroke')
         .style('cursor', 'pointer');
 
@@ -860,6 +909,7 @@ export class CensusMapController {
   private renderZoomCityAnchors(
     g: ReturnType<typeof select<SVGGElement, unknown>>,
     placements: LabelPlacement[],
+    clubBoxes: Array<{ x0: number; y0: number; x1: number; y1: number; minZoom: number }> = [],
   ): void {
     const existingPts = placements.map((p) => ({ x: p.x, y: p.y }));
     const placed: Array<{ x: number; y: number; tier: number }> = [];
@@ -876,12 +926,27 @@ export class CensusMapController {
 
       const isMajor = (m.pop_2025 ?? 0) >= 950_000 || m.competitive >= 200;
       const minZoom = isMajor ? 2.0 : 3.2;
-      const minGap = isMajor ? 22 : 12;
+      const minGap = isMajor ? 24 : 14;
       if (placed.some((p) => Math.hypot(p.x - pt[0], p.y - pt[1]) < minGap)) continue;
+
+      const cityOnly = m.display_name.split(',')[0].trim();
+      // Approximate label box in map units at k=4.2 and skip if it collides with a club label
+      const estW = (cityOnly.length * 4.8 + 8) / 4.2;
+      const estH = 11 / 4.2;
+      const cx0 = pt[0] + 1;
+      const cy0 = pt[1] - estH - 1;
+      const cx1 = cx0 + estW;
+      const cy1 = pt[1] + 1;
+      if (
+        clubBoxes.some(
+          (b) => !(cx1 < b.x0 - 1.2 || cx0 > b.x1 + 1.2 || cy1 < b.y0 - 1.2 || cy0 > b.y1 + 1.2),
+        )
+      ) {
+        continue;
+      }
 
       placed.push({ x: pt[0], y: pt[1], tier: isMajor ? 1 : 2 });
 
-      const cityOnly = m.display_name.split(',')[0].trim();
       const node = g
         .append('g')
         .attr('data-inv-scale', 'true')
@@ -900,7 +965,7 @@ export class CensusMapController {
       node
         .append('text')
         .attr('x', 4)
-        .attr('y', -3)
+        .attr('y', -4)
         .attr('text-anchor', 'start')
         .attr('dominant-baseline', 'central')
         .attr('fill', '#475569')
@@ -922,7 +987,7 @@ export class CensusMapController {
     clubs: Array<{ c: ClubRecord; r: number; pt: [number, number] }>,
     spread: Map<string, [number, number]>,
     state: AppState,
-  ): void {
+  ): Array<{ x0: number; y0: number; x1: number; y1: number; minZoom: number }> {
     const selectedId = state.selection?.kind === 'club' ? state.selection.data.club_id : null;
     const ordered = [...clubs].sort((a, b) => {
       if (a.c.club_id === selectedId) return -1;
@@ -930,25 +995,42 @@ export class CensusMapController {
       return b.c.competitive - a.c.competitive || b.c.total - a.c.total;
     });
 
-    const placed: Array<{ x: number; y: number }> = [];
+    const placedBoxes: Array<{ x0: number; y0: number; x1: number; y1: number; minZoom: number }> = [];
     for (const { c, r, pt } of ordered) {
       const isSelected = c.club_id === selectedId;
       if (!isSelected && c.competitive < 25) continue;
 
+      const labelText = shortClubLabel(c);
       const off = spread.get(c.club_id) ?? [0, 0];
-      // Approximate map-space position at k=4.5 for collision thinning
+      const labelOffset = Math.max(6.0, r * 0.55 + 4.0);
+      // 2D bounding-box collision check in map units at k=4.5
       const effX = pt[0] + off[0] / 4.5;
       const effY = pt[1] + off[1] / 4.5;
-      if (!isSelected && placed.some((p) => Math.hypot(p.x - effX, p.y - effY) < 6.5)) continue;
-      placed.push({ x: effX, y: effY });
+      const estW = (labelText.length * 4.8 + labelOffset + 4) / 4.5;
+      const estH = 12 / 4.5;
+      const box = {
+        x0: effX + labelOffset / 4.5 - 1,
+        y0: effY - estH / 2,
+        x1: effX + estW,
+        y1: effY + estH / 2,
+        minZoom: isSelected ? 2.2 : c.competitive >= 70 ? 3.8 : 5.2,
+      };
+      if (
+        !isSelected &&
+        placedBoxes.some(
+          (b) => !(box.x1 < b.x0 - 1.2 || box.x0 > b.x1 + 1.2 || box.y1 < b.y0 - 0.8 || box.y0 > b.y1 + 0.8),
+        )
+      ) {
+        continue;
+      }
+      placedBoxes.push(box);
 
-      const minZoom = isSelected ? 2.4 : c.competitive >= 70 ? 3.8 : 5.2;
       const node = g
         .append('g')
         .attr('data-inv-scale', 'true')
         .attr('data-x', pt[0].toFixed(2))
         .attr('data-y', pt[1].toFixed(2))
-        .attr('data-zoom-show', String(minZoom))
+        .attr('data-zoom-show', String(box.minZoom))
         .attr('transform', `translate(${pt[0].toFixed(2)},${pt[1].toFixed(2)})`)
         .style('display', 'none');
 
@@ -956,7 +1038,6 @@ export class CensusMapController {
         node.attr('data-spread-x', off[0].toFixed(2)).attr('data-spread-y', off[1].toFixed(2));
       }
 
-      const labelOffset = Math.max(5.5, r * 0.55 + 3.5);
       node
         .append('text')
         .attr('x', labelOffset.toFixed(1))
@@ -969,10 +1050,11 @@ export class CensusMapController {
         .attr('font-weight', isSelected ? '700' : '600')
         .attr('paint-order', 'stroke')
         .attr('stroke', '#ffffff')
-        .attr('stroke-width', '3.2')
+        .attr('stroke-width', '3.4')
         .attr('stroke-linejoin', 'round')
-        .text(shortClubLabel(c));
+        .text(labelText);
     }
+    return placedBoxes;
   }
 
   private renderLabels(

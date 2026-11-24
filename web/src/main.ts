@@ -124,12 +124,14 @@ class FencingMapApp {
   private tableSortAsc = false;
   private toastTimer: number | null = null;
   private renderRaf: number | null = null;
+  private filterNotice: string | null = null;
 
   // Cached element handles
   private mapSvgEl!: SVGSVGElement;
   private tooltipEl!: HTMLElement;
   private toastEl!: HTMLElement;
   private modalEl!: HTMLElement;
+  private keyTermsModalEl!: HTMLElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -191,6 +193,10 @@ class FencingMapApp {
 
     this.root.innerHTML = `
       <div class="bureau-shell">
+        <div class="desktop-notice">
+          <strong>Desktop recommended:</strong> This interactive map and data explorer is designed for desktop screens. Some controls and labels work best on a wider display.
+        </div>
+
         <header class="masthead">
           <div class="masthead-left">
             ${atlasEmblemMarkup()}
@@ -198,9 +204,9 @@ class FencingMapApp {
               <div class="masthead-kicker">Independent Project · Not affiliated with USA Fencing or U.S. Census</div>
               <h1 class="masthead-title">USA Fencing Membership &amp; Club Geography</h1>
               <p class="masthead-sub">
-                ${sum.coverage.geocoded_clubs.toLocaleString()} of ${sum.tracker_distinct_clubs.toLocaleString()} clubs mapped
-                (${sum.coverage.geocoded_competitive_pct.toFixed(1)}% of U.S.-based competitive fencers) ·
-                ${sum.totals.competitive.toLocaleString()} club-affiliated competitive memberships
+                ${sum.coverage.geocoded_competitive_pct.toFixed(1)}% of U.S.-based competitive fencers mapped across
+                ${sum.coverage.geocoded_clubs.toLocaleString()} of ${sum.tracker_distinct_clubs.toLocaleString()} clubs ·
+                ${sum.totals.competitive.toLocaleString()} competitive memberships
               </p>
             </div>
           </div>
@@ -210,9 +216,10 @@ class FencingMapApp {
               <span class="form-stamp-date">${esc(seasonStageLabel(sum.snapshot_date))}</span>
             </div>
             <div class="masthead-actions">
-              <button type="button" class="btn" id="btn-methodology">Data &amp; Notes</button>
-              <button type="button" class="btn" id="btn-export-svg" title="Download scalable vector graphic (SVG) for editing or printing">Download SVG</button>
-              <button type="button" class="btn btn-primary" id="btn-export-png" title="Download high-resolution image (PNG)">Download PNG</button>
+              <button type="button" class="btn btn-sm" id="btn-key-terms">Key Terms</button>
+              <button type="button" class="btn btn-sm" id="btn-methodology">Data &amp; Notes</button>
+              <button type="button" class="btn btn-sm" id="btn-export-svg" title="Download scalable vector graphic (SVG) for editing or printing">SVG</button>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-export-png" title="Download high-resolution image (PNG)">PNG</button>
             </div>
           </div>
         </header>
@@ -235,86 +242,74 @@ class FencingMapApp {
         <details class="controls-drawer" id="controls-drawer" ${isNarrow ? '' : 'open'}>
           <summary class="controls-drawer-summary">Map Filters &amp; Overlays</summary>
           <section class="controls-bar" aria-label="Map Controls">
-            <div class="controls-row">
-              <div class="ctrl-group">
-                <span class="ctrl-label">Show by</span>
+            <div class="ctrl-group">
+              <label class="ctrl-label" for="ctrl-search">Search</label>
+              <input
+                id="ctrl-search"
+                class="ctrl-input"
+                type="search"
+                placeholder="City, metro, or club…"
+                autocomplete="off"
+              />
+              <span id="ctrl-search-count" class="search-count" aria-live="polite"></span>
+            </div>
+
+            <div class="ctrl-group">
+              <label class="ctrl-label" for="ctrl-metric">Size</label>
+              <select id="ctrl-metric" class="ctrl-select ctrl-select-metric"></select>
+            </div>
+
+            <div class="ctrl-group">
+              <label class="ctrl-label" for="ctrl-color">Color</label>
+              <select id="ctrl-color" class="ctrl-select ctrl-select-color"></select>
+            </div>
+
+            <div class="ctrl-group ctrl-group-min">
+              <label class="ctrl-label" for="ctrl-min">Min</label>
+              <input id="ctrl-min" class="ctrl-range" type="range" min="0" max="200" step="5" value="0" />
+              <span id="ctrl-min-val" class="ctrl-min-val mono" aria-live="polite">No min</span>
+            </div>
+
+            <div class="ctrl-group" id="ctrl-weapon-wrap">
+              <label class="ctrl-label" for="ctrl-weapon">Weapon</label>
+              <select id="ctrl-weapon" class="ctrl-select">
+                <option value="all">All Weapons</option>
+                <option value="epee">Épée</option>
+                <option value="foil">Foil</option>
+                <option value="saber">Saber</option>
+                <option value="para">Parafencing</option>
+              </select>
+            </div>
+
+            <div class="ctrl-group">
+              <label class="ctrl-label" for="ctrl-rings">Host Rings</label>
+              <select id="ctrl-rings" class="ctrl-select ctrl-select-rings">
+                <option value="">None</option>
+                ${hostOptions}
+              </select>
+            </div>
+
+            <details class="layers-popover" id="layers-popover">
+              <summary class="layers-popover-btn">Layers ▾</summary>
+              <div class="layers-popover-panel">
+                <div class="layers-popover-section">Map Unit</div>
                 <div class="segmented" id="ctrl-unit">
                   <button type="button" data-unit="metros">Metros</button>
                   <button type="button" data-unit="clubs">Clubs</button>
                 </div>
+                <div class="layers-popover-section">Map Overlays</div>
+                <div class="ctrl-checks">
+                  <label class="ctrl-check"><input type="checkbox" id="chk-hosts" /> National Host Cities</label>
+                  <label class="ctrl-check"><input type="checkbox" id="chk-com" /> Balance Points</label>
+                  <label class="ctrl-check"><input type="checkbox" id="chk-host-labels" /> Host Labels</label>
+                  <label class="ctrl-check"><input type="checkbox" id="chk-metro-labels" /> Metro Labels</label>
+                  <label class="ctrl-check"><input type="checkbox" id="chk-state-abbr" /> State Abbreviations</label>
+                </div>
               </div>
+            </details>
 
-              <div class="ctrl-group">
-                <label class="ctrl-label" for="ctrl-metric">Size</label>
-                <select id="ctrl-metric" class="ctrl-select ctrl-select-metric"></select>
-              </div>
-
-              <div class="ctrl-group">
-                <label class="ctrl-label" for="ctrl-color">Color</label>
-                <select id="ctrl-color" class="ctrl-select ctrl-select-color"></select>
-              </div>
-
-              <div class="ctrl-group ctrl-group-min">
-                <label class="ctrl-label" for="ctrl-min">Min</label>
-                <input id="ctrl-min" class="ctrl-range" type="range" min="0" max="200" step="5" value="0" />
-                <span id="ctrl-min-val" class="ctrl-min-val mono" aria-live="polite">No min</span>
-              </div>
-
-              <div class="ctrl-group" id="ctrl-weapon-wrap">
-                <label class="ctrl-label" for="ctrl-weapon">Weapon</label>
-                <select id="ctrl-weapon" class="ctrl-select">
-                  <option value="all">All Weapons</option>
-                  <option value="epee">Épée</option>
-                  <option value="foil">Foil</option>
-                  <option value="saber">Saber</option>
-                  <option value="para">Parafencing</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="controls-row">
-              <div class="ctrl-checks">
-                <label class="ctrl-check"><input type="checkbox" id="chk-hosts" /> Host Cities</label>
-                <label class="ctrl-check"><input type="checkbox" id="chk-com" /> Balance Points</label>
-                <label class="ctrl-check"><input type="checkbox" id="chk-host-labels" /> Host Labels</label>
-                <label class="ctrl-check"><input type="checkbox" id="chk-metro-labels" /> Metro Labels</label>
-                <label class="ctrl-check"><input type="checkbox" id="chk-state-abbr" /> State Abbr.</label>
-              </div>
-
-              <div class="ctrl-divider" aria-hidden="true"></div>
-
-              <div class="ctrl-group">
-                <label class="ctrl-label" for="ctrl-rings">Distance Rings</label>
-                <select id="ctrl-rings" class="ctrl-select">
-                  <option value="">None</option>
-                  ${hostOptions}
-                </select>
-              </div>
-
-              <div class="ctrl-group">
-                <label class="ctrl-label" for="ctrl-search">Search</label>
-                <input
-                  id="ctrl-search"
-                  class="ctrl-input"
-                  type="search"
-                  placeholder="Metro or club…"
-                  autocomplete="off"
-                />
-              </div>
-            </div>
+            <button type="button" class="reset-preset-btn" id="btn-reset-preset" title="Restore this view's default filters and overlays">Reset view</button>
           </section>
-        </details>
-
-        <details class="key-terms-drawer">
-          <summary class="key-terms-summary">Key Terms (Competitive, Non-Competitive, Metro Area, Balance Points, Host Cities, Parafencing)</summary>
-          <div class="key-terms-grid">
-            <div><strong>Competitive Membership:</strong> Paid USA Fencing tier required to compete in sanctioned tournaments. Default metric here.</div>
-            <div><strong>Non-Competitive:</strong> Lower-tier and trial memberships (including free 90-day trials, Access, and other non-competitive tiers) that don’t allow national tournament entry.</div>
-            <div><strong>Metro Area:</strong> U.S. Census Core-Based Statistical Area — includes metropolitan areas (50k+ urban core) and smaller micropolitan areas (10k–50k) with surrounding commuter counties.</div>
-            <div><strong>Balance Points:</strong> The point where all competitive fencers balance on the map, each fencer counted once at their club (blue crosshair), vs. the point where all national tournament stops balance, each stop counted once (red crosshair). A small gap means events are centrally placed overall — not average travel distance.</div>
-            <div><strong>National Host Cities (2021–22 to 2026–27):</strong> Cities with hosted or scheduled North American Cup (NAC), Junior Olympics (JO), or Summer Nationals stops.</div>
-            <div><strong>Parafencing &amp; Limits:</strong> <em>Parafencing</em> is wheelchair fencing for athletes with physical disabilities. Counts cover club-affiliated members only (excluding Unattached fencers); memberships renew each Aug 1.</div>
-          </div>
         </details>
 
         <main class="workspace-grid">
@@ -325,7 +320,7 @@ class FencingMapApp {
               <div class="map-zoom-controls">
                 <button type="button" class="zoom-btn" id="btn-zoom-in" title="Zoom in">+</button>
                 <button type="button" class="zoom-btn" id="btn-zoom-out" title="Zoom out">−</button>
-                <button type="button" class="zoom-btn reset-btn" id="btn-zoom-reset" title="Reset map zoom">Reset</button>
+                <button type="button" class="zoom-btn reset-btn" id="btn-zoom-reset" title="Fit U.S. map">Fit US</button>
               </div>
             </div>
             <div class="map-hint">Scroll to zoom · Drag to pan · Click any metro, club, or gold host star for details</div>
@@ -335,13 +330,13 @@ class FencingMapApp {
           <aside class="inspector-card" aria-label="Selection Details">
             <div class="inspector-header">
               <span class="inspector-header-title" id="inspector-header-title">National Overview</span>
-              <button type="button" class="inspector-clear" id="btn-inspector-clear" style="display:none">National View</button>
+              <button type="button" class="inspector-clear" id="btn-inspector-clear" style="display:none">Clear Selection</button>
             </div>
             <div class="inspector-body" id="inspector-body"></div>
           </aside>
         </main>
 
-        <section class="ledger-section" aria-label="Data Tables">
+        <section class="ledger-section" id="ledger-section" aria-label="Data Tables">
           <div class="ledger-header">
             <div class="ledger-tabs" id="ledger-tabs">
               <button type="button" class="ledger-tab" data-ledger="metros">Metro Areas</button>
@@ -369,6 +364,25 @@ class FencingMapApp {
       <div class="map-tooltip" id="map-tooltip"></div>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+      <div class="modal-backdrop" id="key-terms-modal" role="dialog" aria-modal="true" aria-labelledby="key-terms-title">
+        <div class="modal-dialog">
+          <div class="modal-header">
+            <h2 class="modal-title" id="key-terms-title">Key Terms &amp; Definitions</h2>
+            <button type="button" class="inspector-clear" id="btn-key-terms-close">Close [Esc]</button>
+          </div>
+          <div class="modal-body">
+            <div class="key-terms-grid">
+              <div><strong>Competitive Membership:</strong> Paid USA Fencing tier required to compete in sanctioned tournaments. Default metric here.</div>
+              <div><strong>Non-Competitive:</strong> Lower-tier and trial memberships (including free 90-day trials, Access, and other non-competitive tiers) that don’t allow national tournament entry.</div>
+              <div><strong>Metro Area:</strong> U.S. Census Core-Based Statistical Area — includes metropolitan areas (50k+ urban core) and smaller micropolitan areas (10k–50k) with surrounding commuter counties.</div>
+              <div><strong>Balance Points:</strong> The point where all competitive fencers balance on the map, each fencer counted once at their club (blue crosshair), vs. the point where all national tournament stops balance, each stop counted once (red crosshair). A small gap means events are centrally placed overall — not average travel distance.</div>
+              <div><strong>National Host Cities (2021–22 to 2026–27):</strong> Cities with hosted or scheduled North American Cup (NAC), Junior Olympics (JO), or Summer Nationals stops.</div>
+              <div><strong>Parafencing &amp; Limits:</strong> <em>Parafencing</em> is wheelchair fencing for athletes with physical disabilities. Counts cover club-affiliated members only (excluding Unattached fencers); memberships renew each Aug 1.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-backdrop" id="methodology-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-dialog">
           <div class="modal-header">
@@ -384,6 +398,7 @@ class FencingMapApp {
     this.tooltipEl = this.root.querySelector<HTMLElement>('#map-tooltip')!;
     this.toastEl = this.root.querySelector<HTMLElement>('#toast')!;
     this.modalEl = this.root.querySelector<HTMLElement>('#methodology-modal')!;
+    this.keyTermsModalEl = this.root.querySelector<HTMLElement>('#key-terms-modal')!;
 
     this.renderMethodologyContent();
     this.bindEvents();
@@ -394,7 +409,14 @@ class FencingMapApp {
       onHover: (sel, x, y) => this.showTooltip(sel, x, y),
       onLeave: () => this.hideTooltip(),
       onSelect: (sel) => {
+        this.filterNotice = null;
         this.state.selection = sel;
+        if (sel?.kind === 'host') {
+          this.state.ringHostKey = `${sel.data.city}, ${sel.data.state}`;
+          this.state.showHosts = true;
+          this.syncControls();
+          this.renderLegend();
+        }
         this.map.render(this.state);
         this.renderInspector();
       },
@@ -452,7 +474,12 @@ class FencingMapApp {
     // Weapon select
     this.root.querySelector<HTMLSelectElement>('#ctrl-weapon')!.addEventListener('change', (e) => {
       this.state.weapon = (e.target as HTMLSelectElement).value as WeaponFilter;
+      this.reconcileSelectionWithFilters();
+      this.renderScheduleChrome();
+      this.updateSearchCount();
       this.map.render(this.state);
+      this.renderLegend();
+      this.renderInspector();
       if (this.tableTab === 'clubs') this.renderTable();
     });
 
@@ -461,7 +488,10 @@ class FencingMapApp {
     minEl.addEventListener('input', () => {
       this.state.minCount = Number(minEl.value);
       this.root.querySelector('#ctrl-min-val')!.textContent = this.minReadout();
+      this.reconcileSelectionWithFilters();
       this.renderScheduleChrome();
+      this.updateSearchCount();
+      this.renderInspector();
       this.scheduleInputRender(false);
     });
 
@@ -480,12 +510,32 @@ class FencingMapApp {
     bindChk('#chk-metro-labels', 'showMetroLabels');
     bindChk('#chk-state-abbr', 'showStateAbbr');
 
-    // Distance rings dropdown
+    // Close Layers popover on outside click
+    const layersPopover = this.root.querySelector<HTMLDetailsElement>('#layers-popover')!;
+    document.addEventListener('click', (e) => {
+      if (layersPopover.open && !layersPopover.contains(e.target as Node)) {
+        layersPopover.open = false;
+      }
+    });
+
+    // Reset view pill (restores current preset defaults)
+    this.root.querySelector('#btn-reset-preset')!.addEventListener('click', () => {
+      this.applySchedule(this.state.schedule);
+    });
+
+    // Distance rings dropdown (syncs sidebar host selection too)
     this.root.querySelector<HTMLSelectElement>('#ctrl-rings')!.addEventListener('change', (e) => {
       const val = (e.target as HTMLSelectElement).value;
       this.state.ringHostKey = val || null;
-      if (val && !this.state.showHosts) {
+      if (val) {
         this.state.showHosts = true;
+        const host = this.dataset.host_cities.find((h) => `${h.city}, ${h.state}` === val);
+        if (host) {
+          this.filterNotice = null;
+          this.state.selection = { kind: 'host', data: host };
+        }
+      } else if (this.state.selection?.kind === 'host') {
+        this.state.selection = null;
       }
       this.syncControls();
       this.renderScheduleChrome();
@@ -494,10 +544,12 @@ class FencingMapApp {
       this.renderInspector();
     });
 
-    // Search input (rAF-throttled for responsive typing)
+    // Search input (rAF-throttled for responsive typing + live match count)
     const searchEl = this.root.querySelector<HTMLInputElement>('#ctrl-search')!;
     searchEl.addEventListener('input', () => {
       this.state.searchQuery = searchEl.value;
+      this.updateSearchCount();
+      this.renderScheduleChrome();
       this.scheduleInputRender(true);
     });
     searchEl.addEventListener('keydown', (e) => {
@@ -570,16 +622,28 @@ class FencingMapApp {
       }, 150);
     });
 
-    // Data & Notes modal
+    // Data & Notes and Key Terms modals
     const openModal = () => this.modalEl.classList.add('open');
     const closeModal = () => this.modalEl.classList.remove('open');
+    const openKeyTerms = () => this.keyTermsModalEl.classList.add('open');
+    const closeKeyTerms = () => this.keyTermsModalEl.classList.remove('open');
     this.root.querySelector('#btn-methodology')!.addEventListener('click', openModal);
     this.root.querySelector('#btn-modal-close')!.addEventListener('click', closeModal);
     this.modalEl.addEventListener('click', (e) => {
       if (e.target === this.modalEl) closeModal();
     });
+    this.root.querySelector('#btn-key-terms')!.addEventListener('click', openKeyTerms);
+    this.root.querySelector('#btn-key-terms-close')!.addEventListener('click', closeKeyTerms);
+    this.keyTermsModalEl.addEventListener('click', (e) => {
+      if (e.target === this.keyTermsModalEl) closeKeyTerms();
+    });
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeModal();
+      if (e.key === 'Escape') {
+        closeModal();
+        closeKeyTerms();
+        const lp = this.root.querySelector<HTMLDetailsElement>('#layers-popover');
+        if (lp) lp.open = false;
+      }
     });
   }
 
@@ -616,6 +680,10 @@ class FencingMapApp {
 
   private applySchedule(id: ScheduleId): void {
     const sched = getSchedule(id);
+    const defaultHost = sched.defaults.ringHostKey
+      ? this.dataset.host_cities.find((h) => `${h.city}, ${h.state}` === sched.defaults.ringHostKey) ?? null
+      : null;
+    this.filterNotice = null;
     this.state = {
       ...this.state,
       schedule: sched.id,
@@ -629,8 +697,13 @@ class FencingMapApp {
       showMetroLabels: sched.defaults.showMetroLabels,
       ringHostKey: sched.defaults.ringHostKey,
       weapon: 'all',
-      selection: null,
+      searchQuery: '',
+      selection: defaultHost ? { kind: 'host', data: defaultHost } : null,
     };
+
+    const searchInput = this.root.querySelector<HTMLInputElement>('#ctrl-search');
+    if (searchInput) searchInput.value = '';
+    this.updateSearchCount();
 
     if (id === 'host-distance') this.setTableTab('hosts', false);
     else if (id === 'clubs-registry') this.setTableTab('clubs', false);
@@ -642,6 +715,66 @@ class FencingMapApp {
 
     this.map.resetZoom();
     this.syncAll();
+  }
+
+  /** Clear a selected club if the active Weapon or Min filter hides it, leaving an actionable note. */
+  private reconcileSelectionWithFilters(): void {
+    this.filterNotice = null;
+    if (this.state.unit !== 'clubs' || this.state.selection?.kind !== 'club') return;
+    const c = this.state.selection.data;
+    const failsWeapon =
+      (this.state.weapon === 'epee' && !c.has_epee) ||
+      (this.state.weapon === 'foil' && !c.has_foil) ||
+      (this.state.weapon === 'saber' && !c.has_saber) ||
+      (this.state.weapon === 'para' && !c.has_para);
+    const metricVal =
+      this.state.metric === 'non_competitive'
+        ? c.non_competitive
+        : this.state.metric === 'total'
+          ? c.total
+          : c.competitive;
+    const failsMin = metricVal < this.state.minCount;
+    if (failsWeapon || failsMin) {
+      const reason = failsWeapon
+        ? `${c.name} is hidden by the ${this.state.weapon.toUpperCase()} filter (clubs without listed weapons are excluded).`
+        : `${c.name} is hidden by the minimum size filter (${this.minReadout()}).`;
+      this.state.selection = null;
+      this.filterNotice = reason;
+    }
+  }
+
+  private updateSearchCount(): void {
+    const el = this.root.querySelector<HTMLElement>('#ctrl-search-count');
+    if (!el) return;
+    const q = this.state.searchQuery.trim().toLowerCase();
+    if (!q) {
+      el.textContent = '';
+      return;
+    }
+    if (this.state.unit === 'clubs') {
+      const n = this.dataset.clubs.filter((c) => {
+        if (this.state.weapon === 'epee' && !c.has_epee) return false;
+        if (this.state.weapon === 'foil' && !c.has_foil) return false;
+        if (this.state.weapon === 'saber' && !c.has_saber) return false;
+        if (this.state.weapon === 'para' && !c.has_para) return false;
+        const val =
+          this.state.metric === 'non_competitive'
+            ? c.non_competitive
+            : this.state.metric === 'total'
+              ? c.total
+              : c.competitive;
+        if (val < this.state.minCount) return false;
+        return (
+          c.name.toLowerCase().includes(q) ||
+          (c.city ?? '').toLowerCase().includes(q) ||
+          c.abbreviation.toLowerCase().includes(q)
+        );
+      }).length;
+      el.textContent = `${n} club${n === 1 ? '' : 's'}`;
+    } else {
+      const n = this.dataset.metros.filter((m) => m.competitive > 0 && m.cbsa_name.toLowerCase().includes(q)).length;
+      el.textContent = `${n} metro${n === 1 ? '' : 's'}`;
+    }
   }
 
   private setTableTab(tab: TableTab, rerender = true): void {
@@ -691,13 +824,23 @@ class FencingMapApp {
       this.state.metric !== d.metric ||
       this.state.colorMode !== d.colorMode ||
       this.state.showHosts !== d.showHosts ||
-      this.state.minCount !== d.minCount;
-    const guideText = isCustom
-      ? `Custom filters active (${this.state.unit === 'clubs' ? 'Individual Clubs' : 'Metro Areas'} · see legend below map). Click any view tab above to reset.`
-      : sched.howToRead;
-    this.root.querySelector('#how-to-read-bar')!.innerHTML = `
-      <strong>How to read this:</strong>${esc(guideText)}
+      this.state.showCentersOfMass !== d.showCentersOfMass ||
+      this.state.showHostLabels !== d.showHostLabels ||
+      this.state.showMetroLabels !== d.showMetroLabels ||
+      this.state.minCount !== d.minCount ||
+      this.state.weapon !== 'all' ||
+      this.state.searchQuery.trim().length > 0;
+    const resetBtn = this.root.querySelector<HTMLButtonElement>('#btn-reset-preset');
+    if (resetBtn) resetBtn.classList.toggle('visible', isCustom);
+
+    const howBar = this.root.querySelector('#how-to-read-bar')!;
+    howBar.innerHTML = `
+      <span class="how-to-read-text"><strong>How to read this:</strong>${esc(sched.howToRead)}</span>
+      <button type="button" class="jump-table-btn" id="btn-jump-table">View Table ↓</button>
     `;
+    howBar.querySelector('#btn-jump-table')?.addEventListener('click', () => {
+      this.root.querySelector('#ledger-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   private syncControls(): void {
@@ -958,6 +1101,11 @@ class FencingMapApp {
       ].filter(Boolean) as Array<{ label: string; note: string; kind: string; key: string }>;
 
       bodyEl.innerHTML = `
+        ${
+          this.filterNotice
+            ? `<div class="filter-empty-note">${esc(this.filterNotice)} <button type="button" class="inline-link" id="btn-clear-filter-notice">Reset filters</button></div>`
+            : ''
+        }
         <div class="inspector-entity-type">United States · Summary</div>
         <h3 class="inspector-entity-title">National Totals</h3>
         <div class="inspector-entity-sub">
@@ -1002,6 +1150,9 @@ class FencingMapApp {
         </ul>
       `;
 
+      bodyEl.querySelector('#btn-clear-filter-notice')?.addEventListener('click', () => {
+        this.applySchedule(this.state.schedule);
+      });
       bodyEl.querySelectorAll<HTMLElement>('[data-notable-key]').forEach((row) => {
         row.addEventListener('click', () => {
           const kind = row.dataset.notableKind;
@@ -1011,7 +1162,11 @@ class FencingMapApp {
             if (m) this.selectAndFocus({ kind: 'metro', data: m });
           } else if (kind === 'host') {
             const h = this.dataset.host_cities.find((x) => `${x.city}, ${x.state}` === key);
-            if (h) this.selectAndFocus({ kind: 'host', data: h });
+            if (h) {
+              this.state.showHosts = true;
+              this.state.ringHostKey = key;
+              this.selectAndFocus({ kind: 'host', data: h });
+            }
           }
         });
       });
@@ -1086,7 +1241,7 @@ class FencingMapApp {
 
         <div class="inspector-actions">
           <button type="button" class="btn btn-sm" id="btn-inspect-zoom">Zoom to Metro</button>
-          <button type="button" class="btn btn-sm" id="btn-inspect-clubs">View Individual Clubs</button>
+          <button type="button" class="btn btn-sm" id="btn-inspect-clubs">${this.state.unit === 'clubs' ? 'Zoom to Metro Clubs' : 'View Individual Clubs'}</button>
         </div>
       `;
 
@@ -1167,7 +1322,7 @@ class FencingMapApp {
           </div>
           ${c.county ? `<div class="detail-row"><dt>County</dt><dd>${esc(c.county)}</dd></div>` : ''}
           ${c.region ? `<div class="detail-row"><dt>USA Fencing Region</dt><dd>${esc(c.region)}</dd></div>` : ''}
-          <div class="detail-row"><dt>Nearest National Host</dt><dd>${esc(c.nearest_host_city ?? '—')} (${c.nearest_host_miles !== null ? `${Math.round(c.nearest_host_miles)} mi straight-line` : '—'})</dd></div>
+          <div class="detail-row"><dt>Nearest National Host</dt><dd title="Straight-line distance">${esc(c.nearest_host_city ?? '—')}${c.nearest_host_miles !== null ? ` · ${Math.round(c.nearest_host_miles)} mi` : ''}</dd></div>
         </dl>
 
         <div class="tag-row">
@@ -1180,13 +1335,13 @@ class FencingMapApp {
 
         <div class="inspector-actions">
           ${
-            currentZoom < 5.2
+            currentZoom < 9.5
               ? `<button type="button" class="btn btn-sm" id="btn-club-zoom">${currentZoom >= 2.0 ? 'Zoom Closer' : 'Zoom to Club'}</button>`
               : ''
           }
           ${
             currentZoom >= 1.4
-              ? `<button type="button" class="btn btn-sm" id="btn-club-reset">Reset Zoom</button>`
+              ? `<button type="button" class="btn btn-sm" id="btn-club-reset">Fit US Map</button>`
               : ''
           }
         </div>
@@ -1217,7 +1372,9 @@ class FencingMapApp {
       `;
 
       bodyEl.querySelector('#btn-club-zoom')?.addEventListener('click', () => {
-        this.map.flyTo(c.lat, c.lng, currentZoom >= 2.0 ? Math.min(10, currentZoom * 1.65) : 6.2);
+        const liveK = this.map.getTransform().k;
+        const nextK = liveK >= 2.0 ? Math.min(12, Math.max(liveK * 1.65, 6.2)) : 6.2;
+        this.map.flyTo(c.lat, c.lng, nextK);
       });
       bodyEl.querySelector('#btn-club-reset')?.addEventListener('click', () => {
         this.map.resetZoom();
@@ -1472,30 +1629,45 @@ class FencingMapApp {
           this.tableSortAsc = !this.tableSortAsc;
         } else {
           this.tableSortKey = key;
-          this.tableSortAsc = key === 'display_name' || key === 'city' || key === 'name';
+          this.tableSortAsc =
+            key === 'display_name' ||
+            key === 'city' ||
+            key === 'name' ||
+            key === 'weighted_mean_comp_miles';
         }
         this.renderTable();
       });
     });
 
-    // Bind row clicks
+    // Bind row clicks (smoothly bring map + inspector back into view)
     wrap.querySelectorAll<HTMLElement>('tbody tr[data-row-kind]').forEach((tr) => {
       tr.addEventListener('click', () => {
         const kind = tr.dataset.rowKind;
         const id = tr.dataset.rowId!;
+        let acted = false;
         if (kind === 'metro') {
           const m = this.dataset.metros.find((x) => x.cbsa_code === id);
-          if (m) this.selectAndFocus({ kind: 'metro', data: m });
+          if (m) {
+            this.selectAndFocus({ kind: 'metro', data: m });
+            acted = true;
+          }
         } else if (kind === 'club') {
           const c = this.dataset.clubs.find((x) => x.club_id === id);
-          if (c) this.selectAndFocus({ kind: 'club', data: c });
+          if (c) {
+            this.selectAndFocus({ kind: 'club', data: c });
+            acted = true;
+          }
         } else if (kind === 'host') {
           const h = this.dataset.host_cities.find((x) => `${x.city}, ${x.state}` === id);
           if (h) {
             this.state.showHosts = true;
             this.state.ringHostKey = id;
             this.selectAndFocus({ kind: 'host', data: h });
+            acted = true;
           }
+        }
+        if (acted) {
+          this.root.querySelector('.workspace-grid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
       });
     });
@@ -1549,15 +1721,50 @@ class FencingMapApp {
     const q = this.state.searchQuery.trim().toLowerCase();
     if (!q) return;
     if (this.state.unit === 'clubs') {
-      const match = this.dataset.clubs.find(
-        (c) =>
+      const matches = this.dataset.clubs.filter((c) => {
+        if (this.state.weapon === 'epee' && !c.has_epee) return false;
+        if (this.state.weapon === 'foil' && !c.has_foil) return false;
+        if (this.state.weapon === 'saber' && !c.has_saber) return false;
+        if (this.state.weapon === 'para' && !c.has_para) return false;
+        const val =
+          this.state.metric === 'non_competitive'
+            ? c.non_competitive
+            : this.state.metric === 'total'
+              ? c.total
+              : c.competitive;
+        if (val < this.state.minCount) return false;
+        return (
           c.name.toLowerCase().includes(q) ||
           (c.city ?? '').toLowerCase().includes(q) ||
-          c.abbreviation.toLowerCase().includes(q),
-      );
-      if (match) this.selectAndFocus({ kind: 'club', data: match });
+          c.abbreviation.toLowerCase().includes(q)
+        );
+      });
+      if (matches.length === 0) return;
+
+      // If multiple clubs match a city/metro query (e.g. "Chicago" or "Madison"), show the metro's
+      // clickable club list in the sidebar while keeping Individual Clubs visible on the map!
+      if (matches.length > 1) {
+        const metroMatch =
+          this.dataset.metros.find((m) => m.display_name.toLowerCase().startsWith(q)) ??
+          this.dataset.metros.find((m) => m.cbsa_name.toLowerCase().includes(q));
+        if (metroMatch && metroMatch.lat !== null && metroMatch.lng !== null) {
+          this.filterNotice = null;
+          this.state.selection = { kind: 'metro', data: metroMatch };
+          this.map.render(this.state);
+          this.renderInspector();
+          this.map.flyTo(metroMatch.lat, metroMatch.lng, 5.4);
+          return;
+        }
+      }
+
+      const best =
+        matches.find((c) => c.name.toLowerCase().startsWith(q) || c.abbreviation.toLowerCase() === q) ??
+        matches[0];
+      this.selectAndFocus({ kind: 'club', data: best });
     } else {
-      const match = this.dataset.metros.find((m) => m.cbsa_name.toLowerCase().includes(q));
+      const match =
+        this.dataset.metros.find((m) => m.competitive > 0 && m.display_name.toLowerCase().startsWith(q)) ??
+        this.dataset.metros.find((m) => m.competitive > 0 && m.cbsa_name.toLowerCase().includes(q));
       if (match) this.selectAndFocus({ kind: 'metro', data: match });
     }
   }
