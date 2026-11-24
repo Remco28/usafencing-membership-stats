@@ -350,7 +350,7 @@ export class CensusMapController {
     });
 
     if (!isExport && this.callbacks.onZoomChange) {
-      const bucket = k >= 2.0 ? 2 : k > 1.15 ? 1 : 0;
+      const bucket = k >= 13.5 ? 3 : k >= 2.0 ? 2 : k > 1.15 ? 1 : 0;
       if (bucket !== this.lastZoomBucket) {
         this.lastZoomBucket = bucket;
         this.callbacks.onZoomChange(k);
@@ -568,19 +568,20 @@ export class CensusMapController {
             .attr('stroke-dasharray', r.dash)
             .attr('vector-effect', 'non-scaling-stroke');
 
-          // Place a crisp distance label at the northernmost point of each ring arc
-          const northPt = this.projection([host.lng, Math.min(49, host.lat + deg)]);
-          if (northPt) {
+          // Place a crisp distance label right on the northern arc (or southern arc for northern hosts like Minneapolis)
+          const useSouth = host.lat + deg > 48.5;
+          const arcPt = this.projection([host.lng, useSouth ? host.lat - deg : host.lat + deg]);
+          if (arcPt) {
             const lbl = ringG
               .append('g')
               .attr('data-inv-scale', 'true')
-              .attr('data-x', northPt[0].toFixed(2))
-              .attr('data-y', northPt[1].toFixed(2))
-              .attr('transform', `translate(${northPt[0].toFixed(2)},${northPt[1].toFixed(2)})`);
+              .attr('data-x', arcPt[0].toFixed(2))
+              .attr('data-y', arcPt[1].toFixed(2))
+              .attr('transform', `translate(${arcPt[0].toFixed(2)},${arcPt[1].toFixed(2)})`);
             lbl
               .append('text')
               .attr('x', 0)
-              .attr('y', -3)
+              .attr('y', useSouth ? 9 : -3)
               .attr('text-anchor', 'middle')
               .attr('dominant-baseline', 'auto')
               .attr('fill', '#991b1b')

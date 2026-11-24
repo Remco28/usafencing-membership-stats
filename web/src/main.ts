@@ -459,6 +459,8 @@ class FencingMapApp {
       this.state.metric = m;
       if (m === 'comp_per_100k') this.state.colorMode = 'per_capita';
       else if (this.state.colorMode === 'per_capita') this.state.colorMode = 'solid';
+      this.reconcileSelectionWithFilters();
+      this.updateSearchCount();
       this.syncAll();
     });
 
@@ -492,7 +494,7 @@ class FencingMapApp {
       this.renderScheduleChrome();
       this.updateSearchCount();
       this.renderInspector();
-      this.scheduleInputRender(false);
+      this.scheduleInputRender(this.tableTab === 'clubs');
     });
 
     // Checkboxes
@@ -564,10 +566,16 @@ class FencingMapApp {
     this.root.querySelector('#btn-zoom-out')!.addEventListener('click', () => this.map.zoomOut());
     this.root.querySelector('#btn-zoom-reset')!.addEventListener('click', () => this.map.resetZoom());
 
-    // Inspector reset
+    // Inspector reset (also clears pinned host rings if a host was selected)
     this.root.querySelector('#btn-inspector-clear')!.addEventListener('click', () => {
+      if (this.state.selection?.kind === 'host') {
+        this.state.ringHostKey = null;
+      }
       this.state.selection = null;
+      this.syncControls();
+      this.renderScheduleChrome();
       this.map.render(this.state);
+      this.renderLegend();
       this.renderInspector();
     });
 
@@ -622,11 +630,19 @@ class FencingMapApp {
       }, 150);
     });
 
-    // Data & Notes and Key Terms modals
-    const openModal = () => this.modalEl.classList.add('open');
+    // Data & Notes and Key Terms modals (move focus into dialog & prevent stacking)
     const closeModal = () => this.modalEl.classList.remove('open');
-    const openKeyTerms = () => this.keyTermsModalEl.classList.add('open');
     const closeKeyTerms = () => this.keyTermsModalEl.classList.remove('open');
+    const openModal = () => {
+      closeKeyTerms();
+      this.modalEl.classList.add('open');
+      this.root.querySelector<HTMLButtonElement>('#btn-modal-close')?.focus();
+    };
+    const openKeyTerms = () => {
+      closeModal();
+      this.keyTermsModalEl.classList.add('open');
+      this.root.querySelector<HTMLButtonElement>('#btn-key-terms-close')?.focus();
+    };
     this.root.querySelector('#btn-methodology')!.addEventListener('click', openModal);
     this.root.querySelector('#btn-modal-close')!.addEventListener('click', closeModal);
     this.modalEl.addEventListener('click', (e) => {
@@ -827,6 +843,8 @@ class FencingMapApp {
       this.state.showCentersOfMass !== d.showCentersOfMass ||
       this.state.showHostLabels !== d.showHostLabels ||
       this.state.showMetroLabels !== d.showMetroLabels ||
+      this.state.showStateAbbr !== true ||
+      this.state.ringHostKey !== d.ringHostKey ||
       this.state.minCount !== d.minCount ||
       this.state.weapon !== 'all' ||
       this.state.searchQuery.trim().length > 0;
@@ -1179,7 +1197,23 @@ class FencingMapApp {
       const m = sel.data;
       titleEl.textContent = 'Metro Area Details';
       const metroClubs = this.dataset.clubs
-        .filter((c) => c.cbsa_code === m.cbsa_code)
+        .filter((c) => {
+          if (c.cbsa_code !== m.cbsa_code) return false;
+          if (this.state.unit === 'clubs') {
+            if (this.state.weapon === 'epee' && !c.has_epee) return false;
+            if (this.state.weapon === 'foil' && !c.has_foil) return false;
+            if (this.state.weapon === 'saber' && !c.has_saber) return false;
+            if (this.state.weapon === 'para' && !c.has_para) return false;
+            const val =
+              this.state.metric === 'non_competitive'
+                ? c.non_competitive
+                : this.state.metric === 'total'
+                  ? c.total
+                  : c.competitive;
+            if (val < this.state.minCount) return false;
+          }
+          return true;
+        })
         .sort((a, b) => b.competitive - a.competitive)
         .slice(0, 7);
 
@@ -1215,7 +1249,7 @@ class FencingMapApp {
           <div class="detail-row"><dt>2025 Census Pop. Estimate</dt><dd>${fmtPop(m.pop_2025)} (${m.pop_growth_2020_2025_pct !== null ? `${fmtSignedPct(m.pop_growth_2020_2025_pct)} 2020–25` : '—'})</dd></div>
           <div class="detail-row"><dt>2024 Median Household Income</dt><dd>${fmtMoney(m.median_household_income_2024)}</dd></div>
           <div class="detail-row"><dt>National Stops (2021–22 to 2026–27)</dt><dd>${m.major_stops_hosted > 0 ? fmtStops(m.major_stops_hosted) : 'None'}</dd></div>
-          <div class="detail-row"><dt>Nearest National Host City</dt><dd>${esc(m.nearest_host_city ?? '—')} (${m.nearest_host_miles !== null ? `${Math.round(m.nearest_host_miles)} mi straight-line` : '—'})</dd></div>
+          <div class="detail-row"><dt>Nearest National Host City</dt><dd title="Straight-line distance">${esc(m.nearest_host_city ?? '—')}${m.nearest_host_miles !== null ? ` · ${Math.round(m.nearest_host_miles)} mi` : ''}</dd></div>
           <div class="detail-row"><dt>Clubs by Weapon</dt><dd>Épée ${m.epee_clubs} · Foil ${m.foil_clubs} · Saber ${m.saber_clubs} · Para ${m.para_clubs}</dd></div>
         </dl>
 
@@ -1249,14 +1283,16 @@ class FencingMapApp {
         if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 4.8);
       });
       bodyEl.querySelector('#btn-inspect-clubs')?.addEventListener('click', () => {
-        this.state.unit = 'clubs';
-        this.state.metric = 'competitive';
-        this.state.colorMode = 'comp_share';
-        this.state.minCount = 1;
-        this.syncControls();
-        this.renderScheduleChrome();
-        this.map.render(this.state);
-        this.renderLegend();
+        if (this.state.unit !== 'clubs') {
+          this.state.unit = 'clubs';
+          this.state.metric = 'competitive';
+          this.state.colorMode = 'comp_share';
+          this.state.minCount = 1;
+          this.syncControls();
+          this.renderScheduleChrome();
+          this.map.render(this.state);
+          this.renderLegend();
+        }
         if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 5.5);
       });
       bodyEl.querySelectorAll<HTMLElement>('[data-club-id]').forEach((row) => {
@@ -1335,7 +1371,7 @@ class FencingMapApp {
 
         <div class="inspector-actions">
           ${
-            currentZoom < 9.5
+            currentZoom < 13.5
               ? `<button type="button" class="btn btn-sm" id="btn-club-zoom">${currentZoom >= 2.0 ? 'Zoom Closer' : 'Zoom to Club'}</button>`
               : ''
           }
@@ -1373,7 +1409,7 @@ class FencingMapApp {
 
       bodyEl.querySelector('#btn-club-zoom')?.addEventListener('click', () => {
         const liveK = this.map.getTransform().k;
-        const nextK = liveK >= 2.0 ? Math.min(12, Math.max(liveK * 1.65, 6.2)) : 6.2;
+        const nextK = liveK >= 2.0 ? Math.min(14, Math.max(liveK * 1.65, 6.2)) : 6.2;
         this.map.flyTo(c.lat, c.lng, nextK);
       });
       bodyEl.querySelector('#btn-club-reset')?.addEventListener('click', () => {
@@ -1570,6 +1606,15 @@ class FencingMapApp {
         if (this.state.weapon === 'foil' && !c.has_foil) return false;
         if (this.state.weapon === 'saber' && !c.has_saber) return false;
         if (this.state.weapon === 'para' && !c.has_para) return false;
+        if (this.state.unit === 'clubs' && this.state.minCount > 0) {
+          const val =
+            this.state.metric === 'non_competitive'
+              ? c.non_competitive
+              : this.state.metric === 'total'
+                ? c.total
+                : c.competitive;
+          if (val < this.state.minCount) return false;
+        }
         if (
           q &&
           !c.name.toLowerCase().includes(q) &&
