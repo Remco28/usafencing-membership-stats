@@ -152,6 +152,15 @@ function buildLegendSvg(
         `<text x="${hx + 24}" y="${y + 54}" font-family="'IBM Plex Sans', sans-serif" font-size="11" fill="#0f172a">Geographic balance points: where fencers vs. event stops balance on the map (${gapMiles} mi apart — not avg travel)</text>`,
       );
     }
+    if (state.ringHostKey) {
+      const ry = state.showCentersOfMass && gapMiles !== null ? y + 72 : y + 50;
+      parts.push(
+        `<g transform="translate(${hx + 10},${ry})"><circle r="6" fill="rgba(180,35,24,0.12)" stroke="#b42318" stroke-width="1.1" stroke-dasharray="2.4 1.6"/><circle r="2.6" fill="rgba(180,35,24,0.2)" stroke="#b42318" stroke-width="1"/></g>`,
+      );
+      parts.push(
+        `<text x="${hx + 24}" y="${ry + 4}" font-family="'IBM Plex Sans', sans-serif" font-size="11" fill="#0f172a">150 mi / 500 mi straight-line distance rings (${escapeXml(state.ringHostKey)})</text>`,
+      );
+    }
   }
 
   return parts.join('\n');
@@ -174,6 +183,50 @@ function stopsRange(ds: DatasetBundle): string {
 
 function fmtStops(n: number): string {
   return `${n} stop${n === 1 ? '' : 's'}`;
+}
+
+export function composeCurrentViewSvg(
+  liveSvg: SVGSVGElement,
+  dataset: DatasetBundle,
+  state: AppState,
+): string {
+  const w = MAP_WIDTH + 60;
+  const h = MAP_HEIGHT + 130;
+  const sum = dataset.summary;
+  const clone = liveSvg.cloneNode(true) as SVGSVGElement;
+  const mapInner = clone.innerHTML;
+
+  const titleParts: string[] = [];
+  if (state.selection?.kind === 'club') titleParts.push(state.selection.data.name);
+  else if (state.selection?.kind === 'metro') titleParts.push(state.selection.data.display_name);
+  else if (state.selection?.kind === 'host') titleParts.push(`${state.selection.data.city}, ${state.selection.data.state}`);
+  else titleParts.push(getSchedule(state.schedule).title);
+
+  if (state.compareSelection?.kind === 'metro') titleParts.push(`vs. ${state.compareSelection.data.display_name}`);
+  else if (state.compareSelection?.kind === 'host') titleParts.push(`vs. ${state.compareSelection.data.city}, ${state.compareSelection.data.state}`);
+  else if (state.ringHostKey && state.selection?.kind !== 'host') titleParts.push(`+ ${state.ringHostKey} Host Rings`);
+
+  const subtitleParts: string[] = [
+    state.unit === 'clubs' ? 'Individual Clubs' : 'Metro Areas',
+    metricLabel(state.metric),
+  ];
+  if (state.weapon !== 'all') subtitleParts.push(`Weapon: ${state.weapon.toUpperCase()}`);
+  if (state.minCount > 0) subtitleParts.push(`Min ${state.minCount}+`);
+  if (state.focusMode) subtitleParts.push('Focused View');
+  subtitleParts.push(`Data as of ${sum.snapshot_date}`);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <rect width="${w}" height="${h}" fill="#ffffff"/>
+  <text x="30" y="34" font-family="'Source Serif 4', Georgia, serif" font-size="22" font-weight="700" fill="#0b223d">${escapeXml(titleParts.join(' '))}</text>
+  <text x="30" y="54" font-family="'IBM Plex Sans', system-ui, sans-serif" font-size="12" fill="#475569">${escapeXml(subtitleParts.join(' · '))}</text>
+  <g transform="translate(30,68)">
+    <svg width="${MAP_WIDTH}" height="${MAP_HEIGHT}" viewBox="0 0 ${MAP_WIDTH} ${MAP_HEIGHT}" overflow="hidden">
+      ${mapInner}
+    </svg>
+  </g>
+  <text x="30" y="${h - 20}" font-family="'IBM Plex Mono', monospace" font-size="10" fill="#64748b">USA Fencing Membership &amp; Club Geography · Club-affiliated memberships only (excludes Unattached) · Independent project</text>
+</svg>`;
 }
 
 export function composeExportMapSvg(

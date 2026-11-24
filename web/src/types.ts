@@ -170,4 +170,7 @@ export interface AppState {
   ringHostKey: string | null; // "City, ST" for 150 mi / 500 mi straight-line rings
   searchQuery: string;
   selection: Selection;
+  compareSelection: Selection; // Optional 2nd metro or host city for side-by-side comparison
+  focusMode: boolean; // When true, hides unrelated markers/hosts for a clean focused view
+  metroFilterCode: string | null; // Optional Census CBSA filter (drives map, table, and sidebar)
 }

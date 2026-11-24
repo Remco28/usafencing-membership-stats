@@ -1,11 +1,12 @@
 import './styles.css';
 import type { Topology } from 'topojson-specification';
 
-import { composeExportMapSvg, downloadPng, downloadSvg } from './exporter';
+import { composeCurrentViewSvg, composeExportMapSvg, downloadPng, downloadSvg } from './exporter';
 import {
   CensusMapController,
   colorForCompShare,
   colorForPerCapita,
+  haversineMiles,
   starPath,
 } from './map';
 import { SCHEDULES, createInitialState, getSchedule, metricLabel } from './schedules';
@@ -125,6 +126,12 @@ class FencingMapApp {
   private toastTimer: number | null = null;
   private renderRaf: number | null = null;
   private filterNotice: string | null = null;
+  private searchHighlightIdx = -1;
+  private searchHits: Array<
+    | { kind: 'club'; id: string; title: string; sub: string; stat: string }
+    | { kind: 'metro'; id: string; title: string; sub: string; stat: string }
+    | { kind: 'host'; id: string; title: string; sub: string; stat: string }
+  > = [];
 
   // Cached element handles
   private mapSvgEl!: SVGSVGElement;
@@ -218,8 +225,27 @@ class FencingMapApp {
             <div class="masthead-actions">
               <button type="button" class="btn btn-sm" id="btn-key-terms">Key Terms</button>
               <button type="button" class="btn btn-sm" id="btn-methodology">Data &amp; Notes</button>
-              <button type="button" class="btn btn-sm" id="btn-export-svg" title="Download scalable vector graphic (SVG) for editing or printing">SVG</button>
-              <button type="button" class="btn btn-sm btn-primary" id="btn-export-png" title="Download high-resolution image (PNG)">PNG</button>
+              <details class="export-popover" id="export-popover">
+                <summary class="btn btn-sm btn-primary">Export ▾</summary>
+                <div class="export-popover-panel">
+                  <button type="button" class="export-popover-item" id="btn-export-current-png">
+                    <strong>Current View (PNG)</strong>
+                    <small>Exports your exact zoom, focus &amp; rings</small>
+                  </button>
+                  <button type="button" class="export-popover-item" id="btn-export-current-svg">
+                    <strong>Current View (SVG)</strong>
+                    <small>Editable vector of what’s on screen</small>
+                  </button>
+                  <button type="button" class="export-popover-item" id="btn-export-png">
+                    <strong>Full U.S. Plate (PNG)</strong>
+                    <small>Publication 1× national map + ranked table</small>
+                  </button>
+                  <button type="button" class="export-popover-item" id="btn-export-svg">
+                    <strong>Full U.S. Plate (SVG)</strong>
+                    <small>Publication 1× national vector plate</small>
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
         </header>
@@ -243,15 +269,18 @@ class FencingMapApp {
           <summary class="controls-drawer-summary">Map Filters &amp; Overlays</summary>
           <section class="controls-bar" aria-label="Map Controls">
             <div class="ctrl-group">
-              <label class="ctrl-label" for="ctrl-search">Search</label>
-              <input
-                id="ctrl-search"
-                class="ctrl-input"
-                type="search"
-                placeholder="City, metro, or club…"
-                autocomplete="off"
-              />
-              <span id="ctrl-search-count" class="search-count" aria-live="polite"></span>
+              <label class="ctrl-label" for="ctrl-search">Find</label>
+              <div class="search-box-wrap" id="search-box-wrap">
+                <input
+                  id="ctrl-search"
+                  class="ctrl-input"
+                  type="search"
+                  placeholder="Club, city, metro, or host…"
+                  autocomplete="off"
+                />
+                <span id="ctrl-search-count" class="search-count" aria-live="polite"></span>
+                <div class="search-dropdown" id="search-dropdown" role="listbox"></div>
+              </div>
             </div>
 
             <div class="ctrl-group">
@@ -310,6 +339,7 @@ class FencingMapApp {
 
             <button type="button" class="reset-preset-btn" id="btn-reset-preset" title="Restore this view's default filters and overlays">Reset view</button>
           </section>
+          <div class="active-chips-bar" id="active-chips-bar"></div>
         </details>
 
         <main class="workspace-grid">
@@ -512,12 +542,15 @@ class FencingMapApp {
     bindChk('#chk-metro-labels', 'showMetroLabels');
     bindChk('#chk-state-abbr', 'showStateAbbr');
 
-    // Close Layers popover on outside click
+    // Close Layers, Export, and Search popovers on outside click
     const layersPopover = this.root.querySelector<HTMLDetailsElement>('#layers-popover')!;
+    const exportPopover = this.root.querySelector<HTMLDetailsElement>('#export-popover')!;
+    const searchWrap = this.root.querySelector<HTMLElement>('#search-box-wrap')!;
     document.addEventListener('click', (e) => {
-      if (layersPopover.open && !layersPopover.contains(e.target as Node)) {
-        layersPopover.open = false;
-      }
+      const target = e.target as Node;
+      if (layersPopover.open && !layersPopover.contains(target)) layersPopover.open = false;
+      if (exportPopover.open && !exportPopover.contains(target)) exportPopover.open = false;
+      if (!searchWrap.contains(target)) this.closeSearchDropdown();
     });
 
     // Reset view pill (restores current preset defaults)
@@ -525,39 +558,48 @@ class FencingMapApp {
       this.applySchedule(this.state.schedule);
     });
 
-    // Distance rings dropdown (syncs sidebar host selection too)
+    // Distance rings dropdown (non-destructive when a Club or Metro is already selected!)
     this.root.querySelector<HTMLSelectElement>('#ctrl-rings')!.addEventListener('change', (e) => {
       const val = (e.target as HTMLSelectElement).value;
-      this.state.ringHostKey = val || null;
-      if (val) {
-        this.state.showHosts = true;
-        const host = this.dataset.host_cities.find((h) => `${h.city}, ${h.state}` === val);
-        if (host) {
-          this.filterNotice = null;
-          this.state.selection = { kind: 'host', data: host };
-        }
-      } else if (this.state.selection?.kind === 'host') {
-        this.state.selection = null;
-      }
-      this.syncControls();
-      this.renderScheduleChrome();
-      this.map.render(this.state);
-      this.renderLegend();
-      this.renderInspector();
+      this.setHostRings(val || null, { fit: true });
     });
 
-    // Search input (rAF-throttled for responsive typing + live match count)
+    // Universal typeahead search input (searches Clubs, Metros, and Host Cities from any tab)
     const searchEl = this.root.querySelector<HTMLInputElement>('#ctrl-search')!;
     searchEl.addEventListener('input', () => {
       this.state.searchQuery = searchEl.value;
       this.updateSearchCount();
+      this.renderSearchDropdown();
       this.renderScheduleChrome();
       this.scheduleInputRender(true);
     });
+    searchEl.addEventListener('focus', () => {
+      if (searchEl.value.trim().length > 0) this.renderSearchDropdown();
+    });
     searchEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'ArrowDown') {
+        if (this.searchHits.length > 0) {
+          e.preventDefault();
+          this.searchHighlightIdx = (this.searchHighlightIdx + 1) % this.searchHits.length;
+          this.syncSearchHighlight();
+        }
+      } else if (e.key === 'ArrowUp') {
+        if (this.searchHits.length > 0) {
+          e.preventDefault();
+          this.searchHighlightIdx =
+            (this.searchHighlightIdx - 1 + this.searchHits.length) % this.searchHits.length;
+          this.syncSearchHighlight();
+        }
+      } else if (e.key === 'Escape') {
+        this.closeSearchDropdown();
+      } else if (e.key === 'Enter') {
         e.preventDefault();
-        this.jumpToFirstSearchMatch();
+        if (this.searchHits.length > 0) {
+          const idx = this.searchHighlightIdx >= 0 ? this.searchHighlightIdx : 0;
+          this.pickSearchHit(this.searchHits[idx]);
+        } else {
+          this.jumpToFirstSearchMatch();
+        }
       }
     });
 
@@ -566,17 +608,20 @@ class FencingMapApp {
     this.root.querySelector('#btn-zoom-out')!.addEventListener('click', () => this.map.zoomOut());
     this.root.querySelector('#btn-zoom-reset')!.addEventListener('click', () => this.map.resetZoom());
 
-    // Inspector reset (also clears pinned host rings if a host was selected)
+    // Inspector reset (also clears pinned host rings, focus mode, and comparison)
     this.root.querySelector('#btn-inspector-clear')!.addEventListener('click', () => {
       if (this.state.selection?.kind === 'host') {
         this.state.ringHostKey = null;
       }
       this.state.selection = null;
+      this.state.compareSelection = null;
+      this.state.focusMode = false;
       this.syncControls();
       this.renderScheduleChrome();
       this.map.render(this.state);
       this.renderLegend();
       this.renderInspector();
+      this.renderTable();
     });
 
     // Table tabs
@@ -586,30 +631,48 @@ class FencingMapApp {
       });
     });
 
-    // Download SVG & PNG
+    // Download SVG & PNG (Current View & Full U.S. Plate)
+    const closeExport = () => {
+      const ep = this.root.querySelector<HTMLDetailsElement>('#export-popover');
+      if (ep) ep.open = false;
+    };
+    this.root.querySelector('#btn-export-current-svg')!.addEventListener('click', () => {
+      closeExport();
+      const markup = composeCurrentViewSvg(this.map.renderForExport(this.state, 'current'), this.dataset, this.state);
+      const filename = `usaf-view-${this.dataset.summary.snapshot_date}.svg`;
+      downloadSvg(markup, filename);
+      this.showToast(`Exported current view SVG: ${filename}`);
+    });
+    this.root.querySelector('#btn-export-current-png')!.addEventListener('click', async () => {
+      closeExport();
+      try {
+        const markup = composeCurrentViewSvg(this.map.renderForExport(this.state, 'current'), this.dataset, this.state);
+        const filename = `usaf-view-${this.dataset.summary.snapshot_date}.png`;
+        await downloadPng(markup, filename, 2);
+        this.showToast(`Exported current view PNG: ${filename}`);
+      } catch (err) {
+        this.showToast(`Export error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
     this.root.querySelector('#btn-export-svg')!.addEventListener('click', () => {
+      closeExport();
       const sched = getSchedule(this.state.schedule);
-      const markup = composeExportMapSvg(this.map.renderForExport(this.state), this.dataset, this.state);
+      const markup = composeExportMapSvg(this.map.renderForExport(this.state, 'plate'), this.dataset, this.state);
       const filename = `usaf-${sched.id}-${this.dataset.summary.snapshot_date}.svg`;
       downloadSvg(markup, filename);
       this.showToast(`Started SVG download: ${filename}`);
     });
 
-    this.root.querySelector('#btn-export-png')!.addEventListener('click', async (ev) => {
-      const btn = ev.currentTarget as HTMLButtonElement;
-      btn.disabled = true;
-      btn.textContent = 'Rendering…';
+    this.root.querySelector('#btn-export-png')!.addEventListener('click', async () => {
+      closeExport();
       try {
         const sched = getSchedule(this.state.schedule);
-        const markup = composeExportMapSvg(this.map.renderForExport(this.state), this.dataset, this.state);
+        const markup = composeExportMapSvg(this.map.renderForExport(this.state, 'plate'), this.dataset, this.state);
         const filename = `usaf-${sched.id}-${this.dataset.summary.snapshot_date}.png`;
         await downloadPng(markup, filename, 2);
         this.showToast(`Started PNG download: ${filename}`);
       } catch (err) {
         this.showToast(`Export error: ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Download PNG';
       }
     });
 
@@ -715,10 +778,14 @@ class FencingMapApp {
       weapon: 'all',
       searchQuery: '',
       selection: defaultHost ? { kind: 'host', data: defaultHost } : null,
+      compareSelection: null,
+      focusMode: false,
+      metroFilterCode: null,
     };
 
     const searchInput = this.root.querySelector<HTMLInputElement>('#ctrl-search');
     if (searchInput) searchInput.value = '';
+    this.closeSearchDropdown();
     this.updateSearchCount();
 
     if (id === 'host-distance') this.setTableTab('hosts', false);
@@ -731,6 +798,270 @@ class FencingMapApp {
 
     this.map.resetZoom();
     this.syncAll();
+  }
+
+  /** Set or clear active Host Rings without hijacking an open Club or Metro selection. */
+  private setHostRings(hostKey: string | null, opts: { fit?: boolean; selectHostIfIdle?: boolean } = {}): void {
+    const { fit = true, selectHostIfIdle = true } = opts;
+    this.state.ringHostKey = hostKey;
+    if (hostKey) {
+      this.state.showHosts = true;
+      const host = this.dataset.host_cities.find((h) => `${h.city}, ${h.state}` === hostKey);
+      if (host) {
+        if (!this.state.selection || this.state.selection.kind === 'host') {
+          if (selectHostIfIdle) {
+            this.filterNotice = null;
+            this.state.selection = { kind: 'host', data: host };
+          }
+        } else if (fit) {
+          // Keep the user's Club or Metro selected and auto-frame BOTH the selection and the host!
+          const sel = this.state.selection;
+          if (sel.kind === 'club') {
+            this.map.fitGeoPoints(
+              [
+                [sel.data.lat, sel.data.lng],
+                [host.lat, host.lng],
+              ],
+              4.2,
+            );
+          } else if (sel.kind === 'metro' && sel.data.lat !== null && sel.data.lng !== null) {
+            this.map.fitGeoPoints(
+              [
+                [sel.data.lat, sel.data.lng],
+                [host.lat, host.lng],
+              ],
+              4.0,
+            );
+          }
+        }
+      }
+    } else if (this.state.selection?.kind === 'host') {
+      // Keep host card open, just remove rings
+    }
+    this.syncControls();
+    this.renderScheduleChrome();
+    this.map.render(this.state);
+    this.renderLegend();
+    this.renderInspector();
+  }
+
+  /** Render removable active constraint chips (only visible when at least 1 constraint is active). */
+  private renderActiveChips(): void {
+    const bar = this.root.querySelector<HTMLElement>('#active-chips-bar');
+    if (!bar) return;
+    const chips: Array<{ id: string; label: string }> = [];
+
+    if (this.state.focusMode && this.state.selection) {
+      const name =
+        this.state.selection.kind === 'club'
+          ? this.state.selection.data.name
+          : this.state.selection.kind === 'metro'
+            ? this.state.selection.data.display_name
+            : `${this.state.selection.data.city}, ${this.state.selection.data.state}`;
+      chips.push({ id: 'focus', label: `Isolated: ${name}` });
+    }
+    if (this.state.metroFilterCode) {
+      const m = this.dataset.metros.find((x) => x.cbsa_code === this.state.metroFilterCode);
+      chips.push({ id: 'metro', label: `Metro: ${m?.display_name ?? this.state.metroFilterCode}` });
+    }
+    if (this.state.weapon !== 'all') {
+      chips.push({ id: 'weapon', label: `Weapon: ${this.state.weapon.toUpperCase()}` });
+    }
+    if (this.state.ringHostKey && this.state.selection?.kind !== 'host') {
+      chips.push({ id: 'rings', label: `Host Rings: ${this.state.ringHostKey}` });
+    }
+    if (this.state.compareSelection) {
+      const cmpName =
+        this.state.compareSelection.kind === 'metro'
+          ? this.state.compareSelection.data.display_name
+          : this.state.compareSelection.kind === 'host'
+            ? `${this.state.compareSelection.data.city}, ${this.state.compareSelection.data.state}`
+            : this.state.compareSelection.data.name;
+      chips.push({ id: 'compare', label: `Comparing: ${cmpName}` });
+    }
+
+    bar.classList.toggle('visible', chips.length > 0);
+    if (chips.length === 0) {
+      bar.innerHTML = '';
+      return;
+    }
+
+    bar.innerHTML = `
+      <span class="active-chips-label">Active:</span>
+      ${chips
+        .map(
+          (ch) =>
+            `<button type="button" class="filter-chip" data-chip-clear="${ch.id}">${esc(ch.label)} <span class="filter-chip-x">×</span></button>`,
+        )
+        .join('')}
+    `;
+
+    bar.querySelectorAll<HTMLButtonElement>('[data-chip-clear]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.chipClear;
+        if (id === 'focus') this.state.focusMode = false;
+        else if (id === 'metro') this.state.metroFilterCode = null;
+        else if (id === 'weapon') this.state.weapon = 'all';
+        else if (id === 'rings') this.state.ringHostKey = null;
+        else if (id === 'compare') this.state.compareSelection = null;
+        this.syncAll();
+      });
+    });
+  }
+
+  /** Universal typeahead dropdown searching Clubs, Metros, and Host Cities from any tab. */
+  private renderSearchDropdown(): void {
+    const dd = this.root.querySelector<HTMLElement>('#search-dropdown');
+    if (!dd) return;
+    const q = this.state.searchQuery.trim().toLowerCase();
+    if (!q) {
+      this.closeSearchDropdown();
+      return;
+    }
+
+    const clubHits = this.dataset.clubs
+      .filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          (c.city ?? '').toLowerCase().includes(q) ||
+          c.abbreviation.toLowerCase().includes(q),
+      )
+      .sort((a, b) => {
+        const aStarts = a.name.toLowerCase().startsWith(q) || a.abbreviation.toLowerCase() === q ? 0 : 1;
+        const bStarts = b.name.toLowerCase().startsWith(q) || b.abbreviation.toLowerCase() === q ? 0 : 1;
+        return aStarts - bStarts || b.competitive - a.competitive;
+      })
+      .slice(0, 5)
+      .map((c) => ({
+        kind: 'club' as const,
+        id: c.club_id,
+        title: c.name,
+        sub: [c.city, c.state].filter(Boolean).join(', '),
+        stat: `${c.competitive} comp`,
+      }));
+
+    const metroHits = this.dataset.metros
+      .filter((m) => m.competitive > 0 && (m.display_name.toLowerCase().includes(q) || m.cbsa_name.toLowerCase().includes(q)))
+      .sort((a, b) => {
+        const aStarts = a.display_name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.display_name.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || b.competitive - a.competitive;
+      })
+      .slice(0, 4)
+      .map((m) => ({
+        kind: 'metro' as const,
+        id: m.cbsa_code,
+        title: m.display_name,
+        sub: `${m.club_count} clubs`,
+        stat: `${fmtInt(m.competitive)} comp`,
+      }));
+
+    const hostHits = this.dataset.host_cities
+      .filter((h) => `${h.city}, ${h.state}`.toLowerCase().includes(q))
+      .sort((a, b) => b.major_stops - a.major_stops)
+      .slice(0, 3)
+      .map((h) => ({
+        kind: 'host' as const,
+        id: `${h.city}, ${h.state}`,
+        title: `${h.city}, ${h.state}`,
+        sub: 'National Host City',
+        stat: fmtStops(h.major_stops),
+      }));
+
+    const metroExact = metroHits.some((m) => m.title.toLowerCase().startsWith(q));
+    const clubExact = clubHits.some((c) => c.title.toLowerCase().startsWith(q));
+    const groups: Array<{ label: string; items: typeof this.searchHits }> =
+      metroExact && !clubExact
+        ? [
+            { label: 'Metro Areas', items: metroHits },
+            { label: 'National Host Cities', items: hostHits },
+            { label: 'Clubs', items: clubHits },
+          ]
+        : [
+            { label: 'Clubs', items: clubHits },
+            { label: 'Metro Areas', items: metroHits },
+            { label: 'National Host Cities', items: hostHits },
+          ];
+
+    this.searchHits = groups.flatMap((g) => g.items);
+    this.searchHighlightIdx = this.searchHits.length > 0 ? 0 : -1;
+
+    if (this.searchHits.length === 0) {
+      dd.innerHTML = `<div class="search-group-head">No matching clubs, metros, or host cities</div>`;
+      dd.classList.add('open');
+      return;
+    }
+
+    let idx = 0;
+    const renderGroup = (label: string, items: typeof this.searchHits) => {
+      if (items.length === 0) return '';
+      return `
+        <div class="search-group-head">${label}</div>
+        ${items
+          .map((it) => {
+            const myIdx = idx++;
+            return `
+              <button type="button" class="search-item${myIdx === 0 ? ' is-hi' : ''}" data-search-idx="${myIdx}" data-search-kind="${it.kind}">
+                <span class="search-item-main">${esc(it.title)}<span class="search-item-sub">${esc(it.sub)}</span></span>
+                <span class="search-item-stat">${esc(it.stat)}</span>
+              </button>
+            `;
+          })
+          .join('')}
+      `;
+    };
+
+    dd.innerHTML = groups.map((g) => renderGroup(g.label, g.items)).join('');
+    dd.classList.add('open');
+
+    dd.querySelectorAll<HTMLButtonElement>('[data-search-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const hit = this.searchHits[Number(btn.dataset.searchIdx)];
+        if (hit) this.pickSearchHit(hit);
+      });
+    });
+  }
+
+  private syncSearchHighlight(): void {
+    const dd = this.root.querySelector<HTMLElement>('#search-dropdown');
+    if (!dd) return;
+    dd.querySelectorAll<HTMLElement>('[data-search-idx]').forEach((el) => {
+      el.classList.toggle('is-hi', Number(el.dataset.searchIdx) === this.searchHighlightIdx);
+    });
+  }
+
+  private closeSearchDropdown(): void {
+    const dd = this.root.querySelector<HTMLElement>('#search-dropdown');
+    if (dd) dd.classList.remove('open');
+    this.searchHits = [];
+    this.searchHighlightIdx = -1;
+  }
+
+  private pickSearchHit(hit: (typeof this.searchHits)[number]): void {
+    this.closeSearchDropdown();
+    this.state.searchQuery = '';
+    const searchEl = this.root.querySelector<HTMLInputElement>('#ctrl-search');
+    if (searchEl) searchEl.value = '';
+    this.updateSearchCount();
+    this.state.compareSelection = null;
+
+    if (hit.kind === 'club') {
+      const c = this.dataset.clubs.find((x) => x.club_id === hit.id);
+      if (c) {
+        this.state.metroFilterCode = null;
+        this.selectAndFocus({ kind: 'club', data: c });
+      }
+    } else if (hit.kind === 'metro') {
+      const m = this.dataset.metros.find((x) => x.cbsa_code === hit.id);
+      if (m) this.selectAndFocus({ kind: 'metro', data: m });
+    } else {
+      const h = this.dataset.host_cities.find((x) => `${x.city}, ${x.state}` === hit.id);
+      if (h) {
+        this.state.showHosts = true;
+        this.state.ringHostKey = hit.id;
+        this.selectAndFocus({ kind: 'host', data: h });
+      }
+    }
   }
 
   /** Clear a selected club if the active Weapon or Min filter hides it, leaving an actionable note. */
@@ -847,9 +1178,14 @@ class FencingMapApp {
       this.state.ringHostKey !== d.ringHostKey ||
       this.state.minCount !== d.minCount ||
       this.state.weapon !== 'all' ||
+      this.state.focusMode ||
+      this.state.metroFilterCode !== null ||
+      this.state.compareSelection !== null ||
       this.state.searchQuery.trim().length > 0;
     const resetBtn = this.root.querySelector<HTMLButtonElement>('#btn-reset-preset');
     if (resetBtn) resetBtn.classList.toggle('visible', isCustom);
+
+    this.renderActiveChips();
 
     const howBar = this.root.querySelector('#how-to-read-bar')!;
     howBar.innerHTML = `
@@ -1195,7 +1531,8 @@ class FencingMapApp {
 
     if (sel.kind === 'metro') {
       const m = sel.data;
-      titleEl.textContent = 'Metro Area Details';
+      const cmpM = this.state.compareSelection?.kind === 'metro' ? this.state.compareSelection.data : null;
+      titleEl.textContent = cmpM ? 'Metro Comparison' : 'Metro Area Details';
       const metroClubs = this.dataset.clubs
         .filter((c) => {
           if (c.cbsa_code !== m.cbsa_code) return false;
@@ -1214,56 +1551,132 @@ class FencingMapApp {
           }
           return true;
         })
+        .sort((a, b) => b.competitive - a.competitive);
+
+      const otherMetroOpts = [...this.dataset.metros]
+        .filter((x) => x.competitive > 0 && x.cbsa_code !== m.cbsa_code)
         .sort((a, b) => b.competitive - a.competitive)
-        .slice(0, 7);
+        .slice(0, 60)
+        .map(
+          (x) =>
+            `<option value="${esc(x.cbsa_code)}" ${cmpM?.cbsa_code === x.cbsa_code ? 'selected' : ''}>${esc(x.display_name)} (${fmtInt(x.competitive)})</option>`,
+        )
+        .join('');
+
+      const weaponChip = (w: WeaponFilter, label: string, count: number) =>
+        `<button type="button" class="weapon-chip${this.state.metroFilterCode === m.cbsa_code && this.state.weapon === w ? ' active' : ''}" data-metro-weapon="${w}" title="Focus ${label} clubs in ${esc(m.display_name)}">${label} ${count}</button>`;
+
+      const compareSection = cmpM
+        ? `
+          <div class="sublist-heading">Side-by-Side Comparison</div>
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>${esc(m.display_name)}</th>
+                <th>${esc(cmpM.display_name)}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Competitive</td><td>${fmtInt(m.competitive)}</td><td>${fmtInt(cmpM.competitive)}</td></tr>
+              <tr><td>Non-Competitive</td><td>${fmtInt(m.non_competitive)}</td><td>${fmtInt(cmpM.non_competitive)}</td></tr>
+              <tr><td>% Competitive</td><td>${fmtPct(m.comp_share)}</td><td>${fmtPct(cmpM.comp_share)}</td></tr>
+              <tr><td>Per 100k Pop.</td><td>${m.comp_per_100k.toFixed(1)}</td><td>${cmpM.comp_per_100k.toFixed(1)}</td></tr>
+              <tr><td>Mapped Clubs</td><td>${m.club_count}</td><td>${cmpM.club_count}</td></tr>
+              <tr><td>2025 Pop.</td><td>${fmtPop(m.pop_2025)}</td><td>${fmtPop(cmpM.pop_2025)}</td></tr>
+              <tr><td>5-Yr Growth</td><td>${fmtSignedPct(m.pop_growth_2020_2025_pct)}</td><td>${fmtSignedPct(cmpM.pop_growth_2020_2025_pct)}</td></tr>
+              <tr><td>Med. Income</td><td>${fmtMoney(m.median_household_income_2024)}</td><td>${fmtMoney(cmpM.median_household_income_2024)}</td></tr>
+              <tr><td>Épée / Foil / Saber</td><td>${m.epee_clubs}/${m.foil_clubs}/${m.saber_clubs}</td><td>${cmpM.epee_clubs}/${cmpM.foil_clubs}/${cmpM.saber_clubs}</td></tr>
+              <tr><td>Nearest Host</td><td>${m.nearest_host_miles !== null ? `${Math.round(m.nearest_host_miles)} mi` : '—'}</td><td>${cmpM.nearest_host_miles !== null ? `${Math.round(cmpM.nearest_host_miles)} mi` : '—'}</td></tr>
+            </tbody>
+          </table>
+        `
+        : '';
+
+      const isFocusedMetro = this.state.metroFilterCode === m.cbsa_code;
 
       bodyEl.innerHTML = `
         <div class="inspector-entity-type">U.S. Census ${esc(m.cbsa_type)}</div>
-        <h3 class="inspector-entity-title">${esc(m.display_name)}</h3>
+        <h3 class="inspector-entity-title">${esc(m.display_name)}${cmpM ? ` vs. ${esc(cmpM.display_name)}` : ''}</h3>
         <div class="inspector-entity-sub">${esc(m.cbsa_name)}</div>
 
-        <div class="kpi-grid">
-          <div class="kpi-box">
-            <div class="kpi-label">Competitive</div>
-            <div class="kpi-val">${fmtInt(m.competitive)}</div>
-            <div class="kpi-sub">${fmtPct(m.comp_share)} of club members</div>
+        ${
+          compareSection ||
+          `
+          <div class="kpi-grid">
+            <div class="kpi-box">
+              <div class="kpi-label">Competitive</div>
+              <div class="kpi-val">${fmtInt(m.competitive)}</div>
+              <div class="kpi-sub">${fmtPct(m.comp_share)} of club members</div>
+            </div>
+            <div class="kpi-box">
+              <div class="kpi-label">Non-Competitive</div>
+              <div class="kpi-val">${fmtInt(m.non_competitive)}</div>
+              <div class="kpi-sub">${fmtInt(m.total)} total club members</div>
+            </div>
+            <div class="kpi-box">
+              <div class="kpi-label">Per 100,000 Residents</div>
+              <div class="kpi-val">${m.comp_per_100k.toFixed(1)}</div>
+              <div class="kpi-sub">Competitive fencers</div>
+            </div>
+            <div class="kpi-box">
+              <div class="kpi-label">Mapped Clubs</div>
+              <div class="kpi-val">${m.club_count}</div>
+              <div class="kpi-sub">${m.major_stops_hosted > 0 ? `${fmtStops(m.major_stops_hosted)} (national)` : 'No national stops'}</div>
+            </div>
           </div>
-          <div class="kpi-box">
-            <div class="kpi-label">Non-Competitive</div>
-            <div class="kpi-val">${fmtInt(m.non_competitive)}</div>
-            <div class="kpi-sub">${fmtInt(m.total)} total club members</div>
+
+          <dl class="detail-list">
+            <div class="detail-row"><dt>2025 Census Pop. Estimate</dt><dd>${fmtPop(m.pop_2025)} (${m.pop_growth_2020_2025_pct !== null ? `${fmtSignedPct(m.pop_growth_2020_2025_pct)} 2020–25` : '—'})</dd></div>
+            <div class="detail-row"><dt>2024 Median Household Income</dt><dd>${fmtMoney(m.median_household_income_2024)}</dd></div>
+            <div class="detail-row">
+              <dt>Nearest National Host</dt>
+              <dd>
+                ${
+                  m.nearest_host_city
+                    ? `<button type="button" class="inline-link" id="btn-metro-nearest-host" title="Show 150 / 500 mi rings from ${esc(m.nearest_host_city)}">${esc(m.nearest_host_city)}${m.nearest_host_miles !== null ? ` · ${Math.round(m.nearest_host_miles)} mi` : ''}</button>`
+                    : '—'
+                }
+              </dd>
+            </div>
+          </dl>
+
+          <div class="sublist-heading">Filter Metro Clubs by Weapon</div>
+          <div class="tag-row">
+            ${weaponChip('epee', 'Épée', m.epee_clubs)}
+            ${weaponChip('foil', 'Foil', m.foil_clubs)}
+            ${weaponChip('saber', 'Saber', m.saber_clubs)}
+            ${weaponChip('para', 'Para', m.para_clubs)}
           </div>
-          <div class="kpi-box">
-            <div class="kpi-label">Per 100,000 Residents</div>
-            <div class="kpi-val">${m.comp_per_100k.toFixed(1)}</div>
-            <div class="kpi-sub">Competitive fencers</div>
-          </div>
-          <div class="kpi-box">
-            <div class="kpi-label">Mapped Clubs</div>
-            <div class="kpi-val">${m.club_count}</div>
-            <div class="kpi-sub">${m.major_stops_hosted > 0 ? `${fmtStops(m.major_stops_hosted)} (national)` : 'No national stops'}</div>
-          </div>
+          `
+        }
+
+        <div class="host-measure-row">
+          <select id="ctrl-compare-metro" class="ctrl-select" aria-label="Compare with another metro">
+            <option value="">Compare with another metro…</option>
+            ${otherMetroOpts}
+          </select>
+          ${cmpM ? `<button type="button" class="btn btn-sm" id="btn-clear-compare">Clear</button>` : ''}
         </div>
 
-        <dl class="detail-list">
-          <div class="detail-row"><dt>2025 Census Pop. Estimate</dt><dd>${fmtPop(m.pop_2025)} (${m.pop_growth_2020_2025_pct !== null ? `${fmtSignedPct(m.pop_growth_2020_2025_pct)} 2020–25` : '—'})</dd></div>
-          <div class="detail-row"><dt>2024 Median Household Income</dt><dd>${fmtMoney(m.median_household_income_2024)}</dd></div>
-          <div class="detail-row"><dt>National Stops (2021–22 to 2026–27)</dt><dd>${m.major_stops_hosted > 0 ? fmtStops(m.major_stops_hosted) : 'None'}</dd></div>
-          <div class="detail-row"><dt>Nearest National Host City</dt><dd title="Straight-line distance">${esc(m.nearest_host_city ?? '—')}${m.nearest_host_miles !== null ? ` · ${Math.round(m.nearest_host_miles)} mi` : ''}</dd></div>
-          <div class="detail-row"><dt>Clubs by Weapon</dt><dd>Épée ${m.epee_clubs} · Foil ${m.foil_clubs} · Saber ${m.saber_clubs} · Para ${m.para_clubs}</dd></div>
-        </dl>
+        <div class="inspector-actions">
+          <button type="button" class="btn btn-sm ${isFocusedMetro ? 'btn-primary' : ''}" id="btn-focus-metro-clubs">
+            ${isFocusedMetro ? 'Showing Only Metro Clubs ✓' : 'Focus Metro Clubs'}
+          </button>
+          <button type="button" class="btn btn-sm" id="btn-inspect-zoom">Zoom to Metro</button>
+        </div>
 
         ${
-          metroClubs.length > 0
+          !cmpM && metroClubs.length > 0
             ? `
-              <div class="sublist-heading">Largest Clubs in Metro (${m.club_count} total)</div>
-              <ul class="mini-list">
+              <div class="sublist-heading">Clubs in ${esc(m.display_name)} (${metroClubs.length}${this.state.weapon !== 'all' ? ` · ${this.state.weapon}` : ''})</div>
+              <ul class="mini-list mini-list-scroll">
                 ${metroClubs
                   .map(
                     (c) => `
                       <li class="mini-list-item" data-club-id="${esc(c.club_id)}">
                         <span class="mini-list-name">${esc(c.name)}</span>
-                        <span class="mini-list-detail is-inline">${c.competitive} competitive</span>
+                        <span class="mini-list-detail is-inline">${c.competitive} comp</span>
                       </li>
                     `,
                   )
@@ -1272,28 +1685,59 @@ class FencingMapApp {
             `
             : ''
         }
-
-        <div class="inspector-actions">
-          <button type="button" class="btn btn-sm" id="btn-inspect-zoom">Zoom to Metro</button>
-          <button type="button" class="btn btn-sm" id="btn-inspect-clubs">${this.state.unit === 'clubs' ? 'Zoom to Metro Clubs' : 'View Individual Clubs'}</button>
-        </div>
       `;
 
       bodyEl.querySelector('#btn-inspect-zoom')?.addEventListener('click', () => {
-        if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 4.8);
+        if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 5.2);
       });
-      bodyEl.querySelector('#btn-inspect-clubs')?.addEventListener('click', () => {
-        if (this.state.unit !== 'clubs') {
+      bodyEl.querySelector('#btn-metro-nearest-host')?.addEventListener('click', () => {
+        if (m.nearest_host_city) this.setHostRings(m.nearest_host_city, { fit: true });
+      });
+      bodyEl.querySelector('#btn-focus-metro-clubs')?.addEventListener('click', () => {
+        if (this.state.metroFilterCode === m.cbsa_code) {
+          this.state.metroFilterCode = null;
+        } else {
           this.state.unit = 'clubs';
-          this.state.metric = 'competitive';
-          this.state.colorMode = 'comp_share';
-          this.state.minCount = 1;
-          this.syncControls();
-          this.renderScheduleChrome();
-          this.map.render(this.state);
-          this.renderLegend();
+          if (this.state.metric === 'comp_per_100k') this.state.metric = 'competitive';
+          if (this.state.colorMode === 'per_capita') this.state.colorMode = 'comp_share';
+          this.state.metroFilterCode = m.cbsa_code;
+          this.tableTab = 'clubs';
+          if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 5.8);
         }
-        if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 5.5);
+        this.syncAll();
+      });
+      bodyEl.querySelectorAll<HTMLButtonElement>('[data-metro-weapon]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const w = btn.dataset.metroWeapon as WeaponFilter;
+          const same = this.state.metroFilterCode === m.cbsa_code && this.state.weapon === w;
+          this.state.unit = 'clubs';
+          if (this.state.metric === 'comp_per_100k') this.state.metric = 'competitive';
+          if (this.state.colorMode === 'per_capita') this.state.colorMode = 'comp_share';
+          this.state.metroFilterCode = m.cbsa_code;
+          this.state.weapon = same ? 'all' : w;
+          this.tableTab = 'clubs';
+          this.syncAll();
+          if (m.lat !== null && m.lng !== null) this.map.flyTo(m.lat, m.lng, 5.8);
+        });
+      });
+      bodyEl.querySelector<HTMLSelectElement>('#ctrl-compare-metro')?.addEventListener('change', (e) => {
+        const code = (e.target as HTMLSelectElement).value;
+        const target = code ? this.dataset.metros.find((x) => x.cbsa_code === code) ?? null : null;
+        this.state.compareSelection = target ? { kind: 'metro', data: target } : null;
+        this.syncAll();
+        if (target && m.lat !== null && m.lng !== null && target.lat !== null && target.lng !== null) {
+          this.map.fitGeoPoints(
+            [
+              [m.lat, m.lng],
+              [target.lat, target.lng],
+            ],
+            3.5,
+          );
+        }
+      });
+      bodyEl.querySelector('#btn-clear-compare')?.addEventListener('click', () => {
+        this.state.compareSelection = null;
+        this.syncAll();
       });
       bodyEl.querySelectorAll<HTMLElement>('[data-club-id]').forEach((row) => {
         row.addEventListener('click', () => {
@@ -1317,12 +1761,42 @@ class FencingMapApp {
       const metro = c.cbsa_code
         ? this.dataset.metros.find((m) => m.cbsa_code === c.cbsa_code) ?? null
         : null;
+      // Peer list strictly obeys active Weapon & Min filters
       const sameMetroClubs = c.cbsa_code
         ? this.dataset.clubs
-            .filter((x) => x.cbsa_code === c.cbsa_code)
+            .filter((x) => {
+              if (x.cbsa_code !== c.cbsa_code) return false;
+              if (this.state.weapon === 'epee' && !x.has_epee) return false;
+              if (this.state.weapon === 'foil' && !x.has_foil) return false;
+              if (this.state.weapon === 'saber' && !x.has_saber) return false;
+              if (this.state.weapon === 'para' && !x.has_para) return false;
+              const val =
+                this.state.metric === 'non_competitive'
+                  ? x.non_competitive
+                  : this.state.metric === 'total'
+                    ? x.total
+                    : x.competitive;
+              return val >= this.state.minCount;
+            })
             .sort((a, b) => b.competitive - a.competitive || b.total - a.total)
         : [];
       const currentZoom = this.map.getTransform().k;
+
+      // Active measured host (if Host Rings are on)
+      const activeHost = this.state.ringHostKey
+        ? this.dataset.host_cities.find((h) => `${h.city}, ${h.state}` === this.state.ringHostKey) ?? null
+        : null;
+      const activeHostMiles = activeHost
+        ? Math.round(haversineMiles(c.lat, c.lng, activeHost.lat, activeHost.lng))
+        : null;
+      const hostMeasureOpts = [...this.dataset.host_cities]
+        .sort((a, b) => haversineMiles(c.lat, c.lng, a.lat, a.lng) - haversineMiles(c.lat, c.lng, b.lat, b.lng))
+        .map((h) => {
+          const k = `${h.city}, ${h.state}`;
+          const d = Math.round(haversineMiles(c.lat, c.lng, h.lat, h.lng));
+          return `<option value="${esc(k)}" ${this.state.ringHostKey === k ? 'selected' : ''}>${esc(k)} (${d} mi · ${fmtStops(h.major_stops)})</option>`;
+        })
+        .join('');
 
       bodyEl.innerHTML = `
         <div class="inspector-entity-type">Fencing Club${c.abbreviation ? ` · ${esc(c.abbreviation)}` : ''}</div>
@@ -1358,7 +1832,21 @@ class FencingMapApp {
           </div>
           ${c.county ? `<div class="detail-row"><dt>County</dt><dd>${esc(c.county)}</dd></div>` : ''}
           ${c.region ? `<div class="detail-row"><dt>USA Fencing Region</dt><dd>${esc(c.region)}</dd></div>` : ''}
-          <div class="detail-row"><dt>Nearest National Host</dt><dd title="Straight-line distance">${esc(c.nearest_host_city ?? '—')}${c.nearest_host_miles !== null ? ` · ${Math.round(c.nearest_host_miles)} mi` : ''}</dd></div>
+          <div class="detail-row">
+            <dt>Nearest National Host</dt>
+            <dd>
+              ${
+                c.nearest_host_city
+                  ? `<button type="button" class="inline-link" id="btn-club-nearest-host" title="Draw 150 / 500 mi rings and connect to ${esc(c.nearest_host_city)}">${esc(c.nearest_host_city)}${c.nearest_host_miles !== null ? ` · ${Math.round(c.nearest_host_miles)} mi` : ''}</button>`
+                  : '—'
+              }
+            </dd>
+          </div>
+          ${
+            activeHost && activeHostMiles !== null
+              ? `<div class="detail-row"><dt>Selected Host Ring</dt><dd style="color:#b42318">${esc(this.state.ringHostKey!)} · ${activeHostMiles.toLocaleString()} mi</dd></div>`
+              : ''
+          }
         </dl>
 
         <div class="tag-row">
@@ -1369,7 +1857,18 @@ class FencingMapApp {
           }
         </div>
 
+        <div class="host-measure-row">
+          <select id="ctrl-club-host" class="ctrl-select" aria-label="Show distance rings for a national host city">
+            <option value="">Show rings for a host city…</option>
+            ${hostMeasureOpts}
+          </select>
+          ${activeHost ? `<button type="button" class="btn btn-sm" id="btn-club-clear-host">Clear</button>` : ''}
+        </div>
+
         <div class="inspector-actions">
+          <button type="button" class="btn btn-sm ${this.state.focusMode ? 'btn-primary' : ''}" id="btn-toggle-focus" title="Hide all other clubs on the map">
+            ${this.state.focusMode ? 'Only This Club ✓' : 'Isolate Club'}
+          </button>
           ${
             currentZoom < 13.5
               ? `<button type="button" class="btn btn-sm" id="btn-club-zoom">${currentZoom >= 2.0 ? 'Zoom Closer' : 'Zoom to Club'}</button>`
@@ -1385,7 +1884,7 @@ class FencingMapApp {
         ${
           sameMetroClubs.length > 1
             ? `
-              <div class="sublist-heading">Clubs in ${esc(metro?.display_name ?? c.cbsa_title ?? 'this Metro')} (${sameMetroClubs.length})</div>
+              <div class="sublist-heading">Clubs in ${esc(metro?.display_name ?? c.cbsa_title ?? 'this Metro')} (${sameMetroClubs.length}${this.state.weapon !== 'all' ? ` · ${this.state.weapon}` : ''})</div>
               <ul class="mini-list mini-list-scroll">
                 ${sameMetroClubs
                   .map(
@@ -1407,6 +1906,22 @@ class FencingMapApp {
         </div>
       `;
 
+      bodyEl.querySelector('#btn-toggle-focus')?.addEventListener('click', () => {
+        this.state.focusMode = !this.state.focusMode;
+        this.renderScheduleChrome();
+        this.map.render(this.state);
+        this.renderInspector();
+      });
+      bodyEl.querySelector('#btn-club-nearest-host')?.addEventListener('click', () => {
+        if (c.nearest_host_city) this.setHostRings(c.nearest_host_city, { fit: true });
+      });
+      bodyEl.querySelector<HTMLSelectElement>('#ctrl-club-host')?.addEventListener('change', (e) => {
+        const val = (e.target as HTMLSelectElement).value;
+        this.setHostRings(val || null, { fit: true });
+      });
+      bodyEl.querySelector('#btn-club-clear-host')?.addEventListener('click', () => {
+        this.setHostRings(null, { fit: false });
+      });
       bodyEl.querySelector('#btn-club-zoom')?.addEventListener('click', () => {
         const liveK = this.map.getTransform().k;
         const nextK = liveK >= 2.0 ? Math.min(14, Math.max(liveK * 1.65, 6.2)) : 6.2;
@@ -1416,7 +1931,10 @@ class FencingMapApp {
         this.map.resetZoom();
       });
       bodyEl.querySelector('#btn-club-metro')?.addEventListener('click', () => {
-        if (metro) this.selectAndFocus({ kind: 'metro', data: metro });
+        if (metro) {
+          this.state.focusMode = false;
+          this.selectAndFocus({ kind: 'metro', data: metro });
+        }
       });
       bodyEl.querySelectorAll<HTMLElement>('[data-peer-club-id]').forEach((row) => {
         row.addEventListener('click', () => {
@@ -1425,54 +1943,106 @@ class FencingMapApp {
           this.state.selection = { kind: 'club', data: peer };
           this.map.render(this.state);
           this.renderInspector();
-          if (this.map.getTransform().k < 3.0) {
-            this.map.flyTo(peer.lat, peer.lng, 5.8);
-          }
+          this.map.flyTo(peer.lat, peer.lng, Math.max(5.5, this.map.getTransform().k));
         });
       });
       return;
     }
 
-    // Host city
+    // Host city (+ optional side-by-side comparison + Top Metros Within 500 mi)
     const h = sel.data;
     const hostKey = `${h.city}, ${h.state}`;
+    const cmpH = this.state.compareSelection?.kind === 'host' ? this.state.compareSelection.data : null;
     const ringsPinned = this.state.ringHostKey === hostKey;
-    titleEl.textContent = `National Host City · ${fmtStops(h.major_stops)}`;
+    titleEl.textContent = cmpH ? 'Host City Comparison' : `National Host City · ${fmtStops(h.major_stops)}`;
+
+    const otherHostOpts = [...this.dataset.host_cities]
+      .filter((x) => `${x.city}, ${x.state}` !== hostKey)
+      .sort((a, b) => b.major_stops - a.major_stops || a.city.localeCompare(b.city))
+      .map((x) => {
+        const k = `${x.city}, ${x.state}`;
+        return `<option value="${esc(k)}" ${cmpH && `${cmpH.city}, ${cmpH.state}` === k ? 'selected' : ''}>${esc(k)} (${fmtStops(x.major_stops)})</option>`;
+      })
+      .join('');
+
+    const metrosIn500 = this.dataset.metros
+      .filter((m) => m.competitive > 0 && m.lat !== null && m.lng !== null)
+      .map((m) => ({ m, dist: Math.round(haversineMiles(h.lat, h.lng, m.lat!, m.lng!)) }))
+      .filter((x) => x.dist <= 500)
+      .sort((a, b) => b.m.competitive - a.m.competitive)
+      .slice(0, 8);
+
+    const hostCompareTable = cmpH
+      ? `
+        <div class="sublist-heading">Side-by-Side Comparison</div>
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th><span class="compare-dot" style="background:#b42318"></span>${esc(h.city)}</th>
+              <th><span class="compare-dot" style="background:#164677"></span>${esc(cmpH.city)}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Major Stops</td><td>${h.major_stops}</td><td>${cmpH.major_stops}</td></tr>
+            <tr><td>Avg Club Dist.</td><td>${Math.round(h.weighted_mean_comp_miles).toLocaleString()} mi</td><td>${Math.round(cmpH.weighted_mean_comp_miles).toLocaleString()} mi</td></tr>
+            <tr><td>Fencers ≤500 mi</td><td>${h.comp_within_500mi_pct.toFixed(1)}%</td><td>${cmpH.comp_within_500mi_pct.toFixed(1)}%</td></tr>
+            <tr><td>Count ≤500 mi</td><td>${fmtInt(h.comp_within_500mi)}</td><td>${fmtInt(cmpH.comp_within_500mi)}</td></tr>
+            <tr><td>Fencers ≤150 mi</td><td>${h.comp_within_150mi_pct.toFixed(1)}%</td><td>${cmpH.comp_within_150mi_pct.toFixed(1)}%</td></tr>
+            <tr><td>Summer Nat. / JO</td><td>${h.sn_count} / ${h.jo_count}</td><td>${cmpH.sn_count} / ${cmpH.jo_count}</td></tr>
+          </tbody>
+        </table>
+      `
+      : '';
+
     bodyEl.innerHTML = `
       <div class="inspector-entity-type">National Host City (2021–22 to 2026–27)</div>
-      <h3 class="inspector-entity-title">${esc(hostKey)}</h3>
+      <h3 class="inspector-entity-title">${esc(hostKey)}${cmpH ? ` vs. ${esc(cmpH.city)}, ${esc(cmpH.state)}` : ''}</h3>
       <div class="inspector-entity-sub">
         ${fmtStops(h.major_stops)}, hosted &amp; scheduled
         (${h.sn_count} Summer Nationals, ${h.jo_count} Junior Olympics, ${h.nac_count} North American Cup)
       </div>
 
-      <div class="kpi-grid">
-        <div class="kpi-box">
-          <div class="kpi-label">Avg Club Distance</div>
-          <div class="kpi-val">${Math.round(h.weighted_mean_comp_miles).toLocaleString()} mi</div>
-          <div class="kpi-sub">Average distance from each competitive member’s club</div>
+      ${
+        hostCompareTable ||
+        `
+        <div class="kpi-grid">
+          <div class="kpi-box">
+            <div class="kpi-label">Avg Club Distance</div>
+            <div class="kpi-val">${Math.round(h.weighted_mean_comp_miles).toLocaleString()} mi</div>
+            <div class="kpi-sub">Average distance from each competitive member’s club</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-label">Fencers Within 500 mi</div>
+            <div class="kpi-val">${h.comp_within_500mi_pct.toFixed(1)}%</div>
+            <div class="kpi-sub">${fmtInt(h.comp_within_500mi)} club competitive fencers</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-label">Fencers Within 150 mi</div>
+            <div class="kpi-val">${h.comp_within_150mi_pct.toFixed(1)}%</div>
+            <div class="kpi-sub">${fmtInt(h.comp_within_150mi)} (~driving range)</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-label">Avg Distance (All Members)</div>
+            <div class="kpi-val">${Math.round(h.weighted_mean_total_miles).toLocaleString()} mi</div>
+            <div class="kpi-sub">Includes non-competitive tiers</div>
+          </div>
         </div>
-        <div class="kpi-box">
-          <div class="kpi-label">Fencers Within 500 mi</div>
-          <div class="kpi-val">${h.comp_within_500mi_pct.toFixed(1)}%</div>
-          <div class="kpi-sub">${fmtInt(h.comp_within_500mi)} club competitive fencers</div>
-        </div>
-        <div class="kpi-box">
-          <div class="kpi-label">Fencers Within 150 mi</div>
-          <div class="kpi-val">${h.comp_within_150mi_pct.toFixed(1)}%</div>
-          <div class="kpi-sub">${fmtInt(h.comp_within_150mi)} (~driving range)</div>
-        </div>
-        <div class="kpi-box">
-          <div class="kpi-label">Avg Distance (All Members)</div>
-          <div class="kpi-val">${Math.round(h.weighted_mean_total_miles).toLocaleString()} mi</div>
-          <div class="kpi-sub">Includes non-competitive tiers</div>
-        </div>
-      </div>
 
-      <dl class="detail-list">
-        <div class="detail-row"><dt>Seasons (Hosted &amp; Scheduled)</dt><dd>${esc(h.seasons)}</dd></div>
-        <div class="detail-row"><dt>Events</dt><dd style="white-space:normal;text-align:right">${esc(h.events)}</dd></div>
-      </dl>
+        <dl class="detail-list">
+          <div class="detail-row"><dt>Seasons (Hosted &amp; Scheduled)</dt><dd>${esc(h.seasons)}</dd></div>
+          <div class="detail-row"><dt>Events</dt><dd style="white-space:normal;text-align:right">${esc(h.events)}</dd></div>
+        </dl>
+        `
+      }
+
+      <div class="host-measure-row">
+        <select id="ctrl-compare-host" class="ctrl-select" aria-label="Compare with another host city">
+          <option value="">Compare with another host city…</option>
+          ${otherHostOpts}
+        </select>
+        ${cmpH ? `<button type="button" class="btn btn-sm" id="btn-clear-host-compare">Clear</button>` : ''}
+      </div>
 
       <div class="inspector-actions">
         <button type="button" class="btn btn-sm ${ringsPinned ? 'btn-stamp' : 'btn-primary'}" id="btn-toggle-rings">
@@ -1480,18 +2050,68 @@ class FencingMapApp {
         </button>
         <button type="button" class="btn btn-sm" id="btn-host-zoom">Zoom to City</button>
       </div>
+
+      ${
+        !cmpH && metrosIn500.length > 0
+          ? `
+            <div class="sublist-heading">Largest Metros Within 500 mi (${metrosIn500.length} shown)</div>
+            <ul class="mini-list mini-list-scroll">
+              ${metrosIn500
+                .map(
+                  ({ m, dist }) => `
+                    <li class="mini-list-item" data-ring-metro="${esc(m.cbsa_code)}">
+                      <span class="mini-list-name">${esc(m.display_name)}</span>
+                      <span class="mini-list-detail is-inline">${dist} mi · ${fmtInt(m.competitive)}</span>
+                    </li>
+                  `,
+                )
+                .join('')}
+            </ul>
+          `
+          : ''
+      }
     `;
 
     bodyEl.querySelector('#btn-toggle-rings')?.addEventListener('click', () => {
       this.state.ringHostKey = ringsPinned ? null : hostKey;
       this.state.showHosts = true;
       this.syncControls();
+      this.renderScheduleChrome();
       this.map.render(this.state);
       this.renderLegend();
       this.renderInspector();
     });
     bodyEl.querySelector('#btn-host-zoom')?.addEventListener('click', () => {
       this.map.flyTo(h.lat, h.lng, 4.2);
+    });
+    bodyEl.querySelector<HTMLSelectElement>('#ctrl-compare-host')?.addEventListener('change', (e) => {
+      const k = (e.target as HTMLSelectElement).value;
+      const target = k ? this.dataset.host_cities.find((x) => `${x.city}, ${x.state}` === k) ?? null : null;
+      this.state.compareSelection = target ? { kind: 'host', data: target } : null;
+      if (target) {
+        this.state.showHosts = true;
+        this.state.ringHostKey = hostKey;
+      }
+      this.syncAll();
+      if (target) {
+        this.map.fitGeoPoints(
+          [
+            [h.lat, h.lng],
+            [target.lat, target.lng],
+          ],
+          2.6,
+        );
+      }
+    });
+    bodyEl.querySelector('#btn-clear-host-compare')?.addEventListener('click', () => {
+      this.state.compareSelection = null;
+      this.syncAll();
+    });
+    bodyEl.querySelectorAll<HTMLElement>('[data-ring-metro]').forEach((row) => {
+      row.addEventListener('click', () => {
+        const m = this.dataset.metros.find((x) => x.cbsa_code === row.dataset.ringMetro);
+        if (m) this.selectAndFocus({ kind: 'metro', data: m });
+      });
     });
   }
 
@@ -1602,6 +2222,7 @@ class FencingMapApp {
       `;
     } else {
       const matched = this.dataset.clubs.filter((c) => {
+        if (this.state.metroFilterCode && c.cbsa_code !== this.state.metroFilterCode) return false;
         if (this.state.weapon === 'epee' && !c.has_epee) return false;
         if (this.state.weapon === 'foil' && !c.has_foil) return false;
         if (this.state.weapon === 'saber' && !c.has_saber) return false;

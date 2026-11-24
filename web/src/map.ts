@@ -23,11 +23,24 @@ import type {
   AppState,
   ClubRecord,
   DatasetBundle,
+  HostCityRecord,
   MetroRecord,
   Selection,
 } from './types';
 
 export { MAP_HEIGHT, MAP_WIDTH };
+
+/** Straight-line great-circle distance in statute miles. */
+export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3958.7613;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
 
 /** Zoom level at which labels that yielded at 1x (to avoid collisions) reappear. */
 const HIDDEN_LABEL_ZOOM = 2.2;
@@ -262,6 +275,40 @@ export class CensusMapController {
     select(this.svgEl).transition().duration(420).call(this.zoomBehavior.transform, t);
   }
 
+  /** Smoothly fit a set of [lat, lng] coordinates into the viewport with breathing room. */
+  public fitGeoPoints(points: Array<[number, number]>, maxScale = 6.5): void {
+    const projected = points
+      .map(([lat, lng]) => this.projection([lng, lat]))
+      .filter((p): p is [number, number] => p !== null);
+    if (projected.length === 0) return;
+    if (projected.length === 1) {
+      this.flyTo(points[0][0], points[0][1], Math.min(maxScale, 4.8));
+      return;
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const [x, y] of projected) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const dx = Math.max(36, maxX - minX);
+    const dy = Math.max(36, maxY - minY);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const scale = Math.max(
+      1.15,
+      Math.min(maxScale, 0.72 / Math.max(dx / MAP_WIDTH, dy / MAP_HEIGHT)),
+    );
+    const t = zoomIdentity
+      .translate(MAP_WIDTH / 2 - cx * scale, MAP_HEIGHT / 2 - cy * scale)
+      .scale(scale);
+    select(this.svgEl).transition().duration(440).call(this.zoomBehavior.transform, t);
+  }
+
   private ensureCountiesLoaded(): void {
     if (this.countyMeshPathD !== null || this.countyLoading) return;
     this.countyLoading = true;
@@ -393,7 +440,10 @@ export class CensusMapController {
   }
 
   /** Render at desktop label size with no on-map buttons reserved, clone it for export, then restore the live view. */
-  public renderForExport(state: AppState): SVGSVGElement {
+  public renderForExport(state: AppState, mode: 'plate' | 'current' = 'plate'): SVGSVGElement {
+    if (mode === 'current') {
+      return this.svgEl.cloneNode(true) as SVGSVGElement;
+    }
     this.forceLabelScale = 1;
     try {
       this.render(state);
@@ -405,9 +455,17 @@ export class CensusMapController {
   }
 
   private visibleMetros(state: AppState): Array<{ m: MetroRecord; r: number; pt: [number, number] }> {
+    const focusedCodes = new Set<string>();
+    if (state.focusMode) {
+      if (state.selection?.kind === 'metro') focusedCodes.add(state.selection.data.cbsa_code);
+      if (state.compareSelection?.kind === 'metro') focusedCodes.add(state.compareSelection.data.cbsa_code);
+      if (state.metroFilterCode) focusedCodes.add(state.metroFilterCode);
+    }
     return this.dataset.metros
       .filter((m) => {
         if (m.lat === null || m.lng === null) return false;
+        if (focusedCodes.size > 0 && !focusedCodes.has(m.cbsa_code)) return false;
+        if (state.metroFilterCode && m.cbsa_code !== state.metroFilterCode) return false;
         if (state.metric === 'comp_per_100k') {
           return (m.pop_2025 ?? 0) >= 250_000 && m.competitive >= Math.max(10, state.minCount);
         }
@@ -542,17 +600,28 @@ export class CensusMapController {
       }
     }
 
-    // 2. Straight-line catchment rings (150 mi & 500 mi) sit beneath every marker and label
+    // 2. Straight-line catchment rings (150 mi & 500 mi) — supports secondary compare host ring in navy
+    const ringHosts: Array<{ host: HostCityRecord; color: string; labelFill: string }> = [];
     if (state.ringHostKey) {
-      const host = this.dataset.host_cities.find(
+      const primary = this.dataset.host_cities.find(
         (h) => `${h.city}, ${h.state}` === state.ringHostKey,
       );
-      if (host) {
-        const ringG = vp.append('g').attr('class', 'layer-rings').attr('pointer-events', 'none');
-        const rings: Array<{ miles: number; dash: string; fillOpacity: number }> = [
-          { miles: 500, dash: '5 4', fillOpacity: 0.05 },
-          { miles: 150, dash: 'none', fillOpacity: 0.09 },
-        ];
+      if (primary) ringHosts.push({ host: primary, color: '#b42318', labelFill: '#991b1b' });
+    }
+    if (state.compareSelection?.kind === 'host') {
+      const cmp = state.compareSelection.data;
+      const cmpKey = `${cmp.city}, ${cmp.state}`;
+      if (cmpKey !== state.ringHostKey) {
+        ringHosts.push({ host: cmp, color: '#164677', labelFill: '#12355b' });
+      }
+    }
+    if (ringHosts.length > 0) {
+      const ringG = vp.append('g').attr('class', 'layer-rings').attr('pointer-events', 'none');
+      const rings: Array<{ miles: number; dash: string; fillOpacity: number }> = [
+        { miles: 500, dash: '5 4', fillOpacity: 0.045 },
+        { miles: 150, dash: 'none', fillOpacity: 0.085 },
+      ];
+      for (const { host, color, labelFill } of ringHosts) {
         for (const r of rings) {
           const deg = r.miles / 69.047;
           const circleGeo = geoCircle().center([host.lng, host.lat]).radius(deg)();
@@ -560,10 +629,10 @@ export class CensusMapController {
             .append('path')
             .datum(circleGeo)
             .attr('d', this.pathGen)
-            .attr('fill', '#b42318')
+            .attr('fill', color)
             .attr('fill-opacity', r.fillOpacity)
-            .attr('stroke', '#b42318')
-            .attr('stroke-opacity', 0.6)
+            .attr('stroke', color)
+            .attr('stroke-opacity', 0.62)
             .attr('stroke-width', 1.2)
             .attr('stroke-dasharray', r.dash)
             .attr('vector-effect', 'non-scaling-stroke');
@@ -584,7 +653,7 @@ export class CensusMapController {
               .attr('y', useSouth ? 9 : -3)
               .attr('text-anchor', 'middle')
               .attr('dominant-baseline', 'auto')
-              .attr('fill', '#991b1b')
+              .attr('fill', labelFill)
               .attr('font-family', FONT_MONO)
               .attr('font-size', '8px')
               .attr('font-weight', '600')
@@ -594,6 +663,61 @@ export class CensusMapController {
               .attr('stroke-linejoin', 'round')
               .text(`${r.miles} mi`);
           }
+        }
+      }
+    }
+
+    // 2b. Dashed straight-line connector when a Club or Metro is selected alongside active Host Rings
+    if (
+      state.ringHostKey &&
+      (state.selection?.kind === 'club' ||
+        (state.selection?.kind === 'metro' &&
+          state.selection.data.lat !== null &&
+          state.selection.data.lng !== null))
+    ) {
+      const host = this.dataset.host_cities.find(
+        (h) => `${h.city}, ${h.state}` === state.ringHostKey,
+      );
+      if (host) {
+        const srcLat = state.selection.data.lat!;
+        const srcLng = state.selection.data.lng!;
+        const pA = this.projection([srcLng, srcLat]);
+        const pB = this.projection([host.lng, host.lat]);
+        if (pA && pB) {
+          const miles = Math.round(haversineMiles(srcLat, srcLng, host.lat, host.lng));
+          const connG = vp.append('g').attr('class', 'layer-connector').attr('pointer-events', 'none');
+          connG
+            .append('line')
+            .attr('x1', pA[0].toFixed(2))
+            .attr('y1', pA[1].toFixed(2))
+            .attr('x2', pB[0].toFixed(2))
+            .attr('y2', pB[1].toFixed(2))
+            .attr('stroke', '#b42318')
+            .attr('stroke-width', 1.6)
+            .attr('stroke-dasharray', '4 3')
+            .attr('vector-effect', 'non-scaling-stroke');
+          const mx = (pA[0] + pB[0]) / 2;
+          const my = (pA[1] + pB[1]) / 2;
+          const badge = connG
+            .append('g')
+            .attr('data-inv-scale', 'true')
+            .attr('data-x', mx.toFixed(2))
+            .attr('data-y', my.toFixed(2))
+            .attr('transform', `translate(${mx.toFixed(2)},${my.toFixed(2)})`);
+          badge
+            .append('text')
+            .attr('x', 0)
+            .attr('y', -4)
+            .attr('text-anchor', 'middle')
+            .attr('fill', '#991b1b')
+            .attr('font-family', FONT_MONO)
+            .attr('font-size', '8.5px')
+            .attr('font-weight', '700')
+            .attr('paint-order', 'stroke')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', '3.2')
+            .attr('stroke-linejoin', 'round')
+            .text(`${miles.toLocaleString()} mi`);
         }
       }
     }
@@ -662,7 +786,8 @@ export class CensusMapController {
       else if (state.colorMode === 'per_capita') fill = colorForPerCapita(m.comp_per_100k);
 
       const isSelected =
-        state.selection?.kind === 'metro' && state.selection.data.cbsa_code === m.cbsa_code;
+        (state.selection?.kind === 'metro' && state.selection.data.cbsa_code === m.cbsa_code) ||
+        (state.compareSelection?.kind === 'metro' && state.compareSelection.data.cbsa_code === m.cbsa_code);
       const isMatch = q.length > 0 && m.cbsa_name.toLowerCase().includes(q);
       const dimmed = q.length > 0 && !isMatch;
 
@@ -712,6 +837,10 @@ export class CensusMapController {
     const q = state.searchQuery.trim().toLowerCase();
     const clubs = this.dataset.clubs
       .filter((c) => {
+        if (state.focusMode && state.selection?.kind === 'club') {
+          return c.club_id === state.selection.data.club_id;
+        }
+        if (state.metroFilterCode && c.cbsa_code !== state.metroFilterCode) return false;
         if (state.weapon === 'epee' && !c.has_epee) return false;
         if (state.weapon === 'foil' && !c.has_foil) return false;
         if (state.weapon === 'saber' && !c.has_saber) return false;
@@ -815,10 +944,15 @@ export class CensusMapController {
       const pt = this.projection([h.lng, h.lat]);
       if (!pt) continue;
       const key = `${h.city}, ${h.state}`;
-      const isSelected =
+      const isPrimary =
         (state.selection?.kind === 'host' &&
           `${state.selection.data.city}, ${state.selection.data.state}` === key) ||
         state.ringHostKey === key;
+      const isCompare =
+        state.compareSelection?.kind === 'host' &&
+        `${state.compareSelection.data.city}, ${state.compareSelection.data.state}` === key;
+      const isSelected = isPrimary || isCompare;
+      if (state.focusMode && !isSelected) continue;
 
       const rOuter = hostStarRadius(h.major_stops);
       const rInner = rOuter * 0.44;
@@ -844,9 +978,28 @@ export class CensusMapController {
       node
         .append('path')
         .attr('d', starPath(rOuter, rInner))
-        .attr('fill', isSelected ? '#b42318' : '#d97706')
+        .attr('fill', isPrimary ? '#b42318' : isCompare ? '#164677' : '#d97706')
         .attr('stroke', '#2a1c10')
         .attr('stroke-width', 1.0);
+
+      if (isSelected && (!state.showHostLabels || state.focusMode)) {
+        node
+          .append('text')
+          .attr('x', (rOuter + 5).toFixed(1))
+          .attr('y', '0.5')
+          .attr('text-anchor', 'start')
+          .attr('dominant-baseline', 'central')
+          .attr('fill', isPrimary ? '#7f1d1d' : '#12355b')
+          .attr('font-family', FONT_SANS)
+          .attr('font-size', '9px')
+          .attr('font-weight', '700')
+          .attr('paint-order', 'stroke')
+          .attr('stroke', '#ffffff')
+          .attr('stroke-width', '3.2')
+          .attr('stroke-linejoin', 'round')
+          .attr('pointer-events', 'none')
+          .text(`${h.city}, ${h.state} · ${h.major_stops} stop${h.major_stops === 1 ? '' : 's'}`);
+      }
 
       node
         .on('mouseenter', (ev: MouseEvent) => {
@@ -1014,7 +1167,7 @@ export class CensusMapController {
         y0: effY - estH / 2,
         x1: effX + estW,
         y1: effY + estH / 2,
-        minZoom: isSelected ? 2.2 : c.competitive >= 70 ? 3.8 : 5.2,
+        minZoom: isSelected ? (state.focusMode ? 1 : 2.2) : c.competitive >= 70 ? 3.8 : 5.2,
       };
       if (
         !isSelected &&

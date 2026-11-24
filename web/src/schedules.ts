@@ -174,5 +174,8 @@ export function createInitialState(): AppState {
     ringHostKey: s.defaults.ringHostKey,
     searchQuery: '',
     selection: null,
+    compareSelection: null,
+    focusMode: false,
+    metroFilterCode: null,
   };
 }
