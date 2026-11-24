@@ -114,6 +114,69 @@ export interface MapCallbacks {
   onHover: (sel: Selection, clientX: number, clientY: number) => void;
   onLeave: () => void;
   onSelect: (sel: Selection) => void;
+  onZoomChange?: (k: number) => void;
+}
+
+/** Short readable label for zoomed-in club callouts. */
+function shortClubLabel(c: ClubRecord): string {
+  const name = c.name.trim();
+  if (name.length <= 22) return name;
+  const shortened = name
+    .replace(/\bFencing\s+(Club|Center|Academy|Institute|Salle|School)\b/gi, 'FC')
+    .replace(/\bFencing\b/gi, 'Fenc.')
+    .trim();
+  if (shortened.length <= 24) return shortened;
+  if (c.abbreviation && c.abbreviation.length >= 2 && c.abbreviation.length <= 8) {
+    return c.abbreviation;
+  }
+  return `${shortened.slice(0, 21).trimEnd()}…`;
+}
+
+/**
+ * Compute deterministic screen-pixel offsets for clubs that share nearly identical
+ * projected coordinates (e.g., same ZIP centroid) so zooming in fans them out cleanly.
+ */
+function computeClubSpread(
+  clubs: Array<{ c: ClubRecord; r: number; pt: [number, number] }>,
+): Map<string, [number, number]> {
+  const offsets = new Map<string, [number, number]>();
+  const assigned = new Set<string>();
+  const CLUSTER_DIST_SQ = 1.8 * 1.8;
+
+  for (let i = 0; i < clubs.length; i++) {
+    const seed = clubs[i];
+    if (assigned.has(seed.c.club_id)) continue;
+    const group = [seed];
+    assigned.add(seed.c.club_id);
+
+    for (let j = i + 1; j < clubs.length; j++) {
+      const other = clubs[j];
+      if (assigned.has(other.c.club_id)) continue;
+      const dx = other.pt[0] - seed.pt[0];
+      const dy = other.pt[1] - seed.pt[1];
+      if (dx * dx + dy * dy <= CLUSTER_DIST_SQ) {
+        group.push(other);
+        assigned.add(other.c.club_id);
+      }
+    }
+
+    if (group.length <= 1) continue;
+
+    // Largest club stays at the center; co-located peers fan out in a tight ring/spiral
+    group.sort((a, b) => b.r - a.r || a.c.club_id.localeCompare(b.c.club_id));
+    offsets.set(group[0].c.club_id, [0, 0]);
+    const peers = group.length - 1;
+    for (let k = 1; k < group.length; k++) {
+      const ring = Math.floor((k - 1) / 6);
+      const posInRing = (k - 1) % 6;
+      const slots = Math.min(6, peers - ring * 6);
+      const angle = (posInRing / slots) * Math.PI * 2 + ring * 0.52 - Math.PI / 4;
+      const distPx = 11 + ring * 9;
+      offsets.set(group[k].c.club_id, [Math.cos(angle) * distPx, Math.sin(angle) * distPx]);
+    }
+  }
+
+  return offsets;
 }
 
 export class CensusMapController {
@@ -125,11 +188,14 @@ export class CensusMapController {
   private statesGeo: GeoPermissibleObjects;
   private statesFeatures: Array<{ id: string; feature: GeoPermissibleObjects }>;
   private nationGeo: GeoPermissibleObjects;
+  private countyMeshPathD: string | null = null;
+  private countyLoading = false;
   private dataset: DatasetBundle;
   private callbacks: MapCallbacks;
   private lastState: AppState | null = null;
   private forceLabelScale: number | null = null;
   private lastLabelScale = 1;
+  private lastZoomBucket = 0;
 
   constructor(
     svgEl: SVGSVGElement,
@@ -196,23 +262,100 @@ export class CensusMapController {
     select(this.svgEl).transition().duration(420).call(this.zoomBehavior.transform, t);
   }
 
+  private ensureCountiesLoaded(): void {
+    if (this.countyMeshPathD !== null || this.countyLoading) return;
+    this.countyLoading = true;
+    fetch('./data/counties-10m.json')
+      .then((res) => (res.ok ? (res.json() as Promise<Topology>) : null))
+      .then((topo) => {
+        if (!topo || !topo.objects.counties) return;
+        const countiesObj = topo.objects.counties as GeometryCollection;
+        const mesh = topojson.mesh(topo, countiesObj, (a, b) => a !== b);
+        this.countyMeshPathD = this.pathGen(mesh) ?? '';
+        const pathEl = this.svgEl.querySelector<SVGPathElement>('#layer-counties-path');
+        if (pathEl && this.countyMeshPathD) {
+          pathEl.setAttribute('d', this.countyMeshPathD);
+          this.applyZoomTransform();
+        }
+      })
+      .catch(() => {
+        // Non-critical basemap enhancement; fail silently if offline
+      })
+      .finally(() => {
+        this.countyLoading = false;
+      });
+  }
+
   private applyZoomTransform(): void {
     const g = this.svgEl.querySelector<SVGGElement>('#map-viewport');
     if (!g) return;
-    g.setAttribute('transform', this.currentTransform.toString());
-    const k = this.currentTransform.k;
+    const isExport = this.forceLabelScale !== null;
+    const t = isExport ? zoomIdentity : this.currentTransform;
+    g.setAttribute('transform', t.toString());
+    const k = t.k;
+    const spreadT = k <= 1.6 ? 0 : Math.min(1, (k - 1.6) / 3.0);
 
-    // Keep stroke widths and labels crisp as user zooms in
+    // 1. Lazy-load & fade subtle county boundaries past 2.2x zoom
+    if (k >= 2.2 && !isExport) this.ensureCountiesLoaded();
+    const countyPath = g.querySelector<SVGPathElement>('#layer-counties-path');
+    if (countyPath) {
+      if (k >= 2.2 && this.countyMeshPathD) {
+        const op = Math.min(0.6, ((k - 2.2) / 2.2) * 0.6);
+        countyPath.style.display = '';
+        countyPath.style.opacity = op.toFixed(2);
+      } else {
+        countyPath.style.display = 'none';
+      }
+    }
+
+    // 2. Fade out giant state abbreviations as user zooms into local city/club detail
+    const abbrLayer = g.querySelector<SVGGElement>('.layer-state-abbr');
+    if (abbrLayer) {
+      const abbrOp = k <= 1.6 ? 1 : k >= 2.8 ? 0 : 1 - (k - 1.6) / 1.2;
+      abbrLayer.style.opacity = abbrOp.toFixed(2);
+      abbrLayer.style.display = abbrOp <= 0.02 ? 'none' : '';
+    }
+
+    // 3. Counter-scale proportional bubbles (and gently fan out co-located clubs) on zoom
+    g.querySelectorAll<SVGCircleElement>('[data-base-r]').forEach((el) => {
+      const baseR = Number(el.dataset.baseR ?? '0');
+      const exp = Number(el.dataset.scaleExp ?? '0.72');
+      el.setAttribute('r', (baseR / Math.pow(k, exp)).toFixed(2));
+      if (el.dataset.spreadX !== undefined) {
+        const bx = Number(el.dataset.baseX ?? '0');
+        const by = Number(el.dataset.baseY ?? '0');
+        const sx = Number(el.dataset.spreadX ?? '0');
+        const sy = Number(el.dataset.spreadY ?? '0');
+        el.setAttribute('cx', (bx + (sx * spreadT) / k).toFixed(2));
+        el.setAttribute('cy', (by + (sy * spreadT) / k).toFixed(2));
+      }
+    });
+
+    // 4. Keep stars, balance reticles, and labels crisp as user zooms in
     g.querySelectorAll<SVGElement>('[data-inv-scale="true"]').forEach((el) => {
-      const baseX = Number(el.dataset.x ?? '0');
-      const baseY = Number(el.dataset.y ?? '0');
+      let baseX = Number(el.dataset.x ?? '0');
+      let baseY = Number(el.dataset.y ?? '0');
+      if (el.dataset.spreadX !== undefined) {
+        baseX += (Number(el.dataset.spreadX) * spreadT) / k;
+        baseY += (Number(el.dataset.spreadY) * spreadT) / k;
+      }
       const s = 1 / Math.pow(k, 0.72);
       el.setAttribute('transform', `translate(${baseX.toFixed(2)},${baseY.toFixed(2)}) scale(${s.toFixed(3)})`);
     });
+
+    // 5. Progressive zoom-in visibility for deferred labels, city anchors, and club names
     g.querySelectorAll<SVGElement>('[data-zoom-show]').forEach((el) => {
       const minK = Number(el.dataset.zoomShow ?? '1');
       el.style.display = k >= minK ? '' : 'none';
     });
+
+    if (!isExport && this.callbacks.onZoomChange) {
+      const bucket = k >= 2.0 ? 2 : k > 1.15 ? 1 : 0;
+      if (bucket !== this.lastZoomBucket) {
+        this.lastZoomBucket = bucket;
+        this.callbacks.onZoomChange(k);
+      }
+    }
   }
 
   /** Labels grow on narrow screens so they stay readable (~8.5 CSS px); the layout engine then drops whatever no longer fits. */
@@ -311,7 +454,7 @@ export class CensusMapController {
 
     const vp = svg.append('g').attr('id', 'map-viewport');
 
-    // 1. US States basemap
+    // 1. US States basemap (+ lazy-loaded county borders on deep zoom)
     const landG = vp.append('g').attr('class', 'layer-states');
     landG
       .append('path')
@@ -321,6 +464,17 @@ export class CensusMapController {
       .attr('stroke', '#64748b')
       .attr('stroke-width', 1.15)
       .attr('vector-effect', 'non-scaling-stroke');
+
+    landG
+      .append('path')
+      .attr('id', 'layer-counties-path')
+      .attr('d', this.countyMeshPathD ?? '')
+      .attr('fill', 'none')
+      .attr('stroke', '#cbd5e1')
+      .attr('stroke-width', 0.65)
+      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('pointer-events', 'none')
+      .style('display', 'none');
 
     landG
       .append('path')
@@ -419,10 +573,14 @@ export class CensusMapController {
 
     // 3. Primary data marks (Metros OR Individual Clubs)
     const dataG = vp.append('g').attr('class', 'layer-data');
+    let clubSpread = new Map<string, [number, number]>();
+    let visibleClubs: Array<{ c: ClubRecord; r: number; pt: [number, number] }> = [];
     if (state.unit === 'metros') {
       this.renderMetros(dataG, state, metros);
     } else {
-      this.renderClubs(dataG, state);
+      const rendered = this.renderClubs(dataG, state);
+      visibleClubs = rendered.clubs;
+      clubSpread = rendered.spread;
     }
 
     // 4. National Event Host Cities (2021-27, hosted & scheduled)
@@ -435,7 +593,23 @@ export class CensusMapController {
       this.renderCentersOfMass(vp.append('g').attr('class', 'layer-com'));
     }
 
-    // 6. Collision-free labels, always layered above every dot, star, and ring
+    // 6. Zoom-in city anchors & club names (hidden at 1x and exports; appear smoothly as user zooms in)
+    if (this.forceLabelScale === null) {
+      this.renderZoomCityAnchors(
+        vp.append('g').attr('class', 'layer-zoom-cities').attr('pointer-events', 'none'),
+        placements,
+      );
+      if (state.unit === 'clubs') {
+        this.renderZoomClubLabels(
+          vp.append('g').attr('class', 'layer-zoom-clubs').attr('pointer-events', 'none'),
+          visibleClubs,
+          clubSpread,
+          state,
+        );
+      }
+    }
+
+    // 7. Collision-free labels, always layered above every dot, star, and ring
     this.renderLabels(vp.append('g').attr('class', 'layer-labels').attr('pointer-events', 'none'), placements);
 
     this.applyZoomTransform();
@@ -468,6 +642,8 @@ export class CensusMapController {
         .attr('cx', pt[0].toFixed(2))
         .attr('cy', pt[1].toFixed(2))
         .attr('r', r.toFixed(2))
+        .attr('data-base-r', r.toFixed(2))
+        .attr('data-scale-exp', '0.62')
         .attr('fill', fill)
         .attr('fill-opacity', dimmed ? 0.16 : isSelected ? 0.92 : 0.72)
         .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
@@ -500,7 +676,10 @@ export class CensusMapController {
   private renderClubs(
     g: ReturnType<typeof select<SVGGElement, unknown>>,
     state: AppState,
-  ): void {
+  ): {
+    clubs: Array<{ c: ClubRecord; r: number; pt: [number, number] }>;
+    spread: Map<string, [number, number]>;
+  } {
     const q = state.searchQuery.trim().toLowerCase();
     const clubs = this.dataset.clubs
       .filter((c) => {
@@ -520,6 +699,8 @@ export class CensusMapController {
       .filter((d): d is { c: ClubRecord; r: number; pt: [number, number] } => d.pt !== null && d.r > 0)
       .sort((a, b) => b.r - a.r);
 
+    const spread = computeClubSpread(clubs);
+
     for (const { c, r, pt } of clubs) {
       const fill = state.colorMode === 'comp_share' ? colorForCompShare(c.comp_share) : '#164677';
       const isSelected =
@@ -530,18 +711,27 @@ export class CensusMapController {
           (c.city ?? '').toLowerCase().includes(q) ||
           c.abbreviation.toLowerCase().includes(q));
       const dimmed = q.length > 0 && !isMatch;
+      const off = spread.get(c.club_id);
 
       const circle = g
         .append('circle')
         .attr('cx', pt[0].toFixed(2))
         .attr('cy', pt[1].toFixed(2))
         .attr('r', r.toFixed(2))
+        .attr('data-base-r', r.toFixed(2))
+        .attr('data-scale-exp', '0.74')
+        .attr('data-base-x', pt[0].toFixed(2))
+        .attr('data-base-y', pt[1].toFixed(2))
         .attr('fill', fill)
         .attr('fill-opacity', dimmed ? 0.14 : isSelected ? 0.95 : 0.74)
         .attr('stroke', isSelected ? '#14191f' : isMatch ? '#b42318' : '#ffffff')
         .attr('stroke-width', isSelected ? 2.0 : isMatch ? 1.6 : 0.75)
         .attr('vector-effect', 'non-scaling-stroke')
         .style('cursor', 'pointer');
+
+      if (off && (off[0] !== 0 || off[1] !== 0)) {
+        circle.attr('data-spread-x', off[0].toFixed(2)).attr('data-spread-y', off[1].toFixed(2));
+      }
 
       circle
         .on('mouseenter', (ev: MouseEvent) => {
@@ -563,6 +753,8 @@ export class CensusMapController {
           this.callbacks.onSelect({ kind: 'club', data: c });
         });
     }
+
+    return { clubs, spread };
   }
 
   private renderHosts(
@@ -662,6 +854,125 @@ export class CensusMapController {
 
     drawReticle(pF, BALANCE_COLORS.fencers);
     drawReticle(pE, BALANCE_COLORS.events);
+  }
+
+  /** Subtle city anchor labels that appear once zoomed in (k >= 2.0) to provide local bearings. */
+  private renderZoomCityAnchors(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    placements: LabelPlacement[],
+  ): void {
+    const existingPts = placements.map((p) => ({ x: p.x, y: p.y }));
+    const placed: Array<{ x: number; y: number; tier: number }> = [];
+
+    const candidates = this.dataset.metros
+      .filter((m) => m.lat !== null && m.lng !== null && ((m.pop_2025 ?? 0) >= 250_000 || m.competitive >= 40))
+      .sort((a, b) => (b.pop_2025 ?? 0) - (a.pop_2025 ?? 0));
+
+    for (const m of candidates) {
+      const pt = this.projection([m.lng!, m.lat!]);
+      if (!pt) continue;
+      // Skip if an active host or metro label already anchors this exact city
+      if (existingPts.some((e) => Math.hypot(e.x - pt[0], e.y - pt[1]) < 9)) continue;
+
+      const isMajor = (m.pop_2025 ?? 0) >= 950_000 || m.competitive >= 200;
+      const minZoom = isMajor ? 2.0 : 3.2;
+      const minGap = isMajor ? 22 : 12;
+      if (placed.some((p) => Math.hypot(p.x - pt[0], p.y - pt[1]) < minGap)) continue;
+
+      placed.push({ x: pt[0], y: pt[1], tier: isMajor ? 1 : 2 });
+
+      const cityOnly = m.display_name.split(',')[0].trim();
+      const node = g
+        .append('g')
+        .attr('data-inv-scale', 'true')
+        .attr('data-x', pt[0].toFixed(2))
+        .attr('data-y', pt[1].toFixed(2))
+        .attr('data-zoom-show', String(minZoom))
+        .attr('transform', `translate(${pt[0].toFixed(2)},${pt[1].toFixed(2)})`)
+        .style('display', 'none');
+
+      node
+        .append('circle')
+        .attr('r', 1.6)
+        .attr('fill', '#475569')
+        .attr('fill-opacity', 0.7);
+
+      node
+        .append('text')
+        .attr('x', 4)
+        .attr('y', -3)
+        .attr('text-anchor', 'start')
+        .attr('dominant-baseline', 'central')
+        .attr('fill', '#475569')
+        .attr('font-family', FONT_SANS)
+        .attr('font-size', isMajor ? '8.5px' : '7.8px')
+        .attr('font-weight', isMajor ? '600' : '500')
+        .attr('letter-spacing', '0.03em')
+        .attr('paint-order', 'stroke')
+        .attr('stroke', '#ffffff')
+        .attr('stroke-width', '3')
+        .attr('stroke-linejoin', 'round')
+        .text(cityOnly);
+    }
+  }
+
+  /** Concise club callouts that appear on deep zoom in Clubs mode so users aren't clicking blind. */
+  private renderZoomClubLabels(
+    g: ReturnType<typeof select<SVGGElement, unknown>>,
+    clubs: Array<{ c: ClubRecord; r: number; pt: [number, number] }>,
+    spread: Map<string, [number, number]>,
+    state: AppState,
+  ): void {
+    const selectedId = state.selection?.kind === 'club' ? state.selection.data.club_id : null;
+    const ordered = [...clubs].sort((a, b) => {
+      if (a.c.club_id === selectedId) return -1;
+      if (b.c.club_id === selectedId) return 1;
+      return b.c.competitive - a.c.competitive || b.c.total - a.c.total;
+    });
+
+    const placed: Array<{ x: number; y: number }> = [];
+    for (const { c, r, pt } of ordered) {
+      const isSelected = c.club_id === selectedId;
+      if (!isSelected && c.competitive < 25) continue;
+
+      const off = spread.get(c.club_id) ?? [0, 0];
+      // Approximate map-space position at k=4.5 for collision thinning
+      const effX = pt[0] + off[0] / 4.5;
+      const effY = pt[1] + off[1] / 4.5;
+      if (!isSelected && placed.some((p) => Math.hypot(p.x - effX, p.y - effY) < 6.5)) continue;
+      placed.push({ x: effX, y: effY });
+
+      const minZoom = isSelected ? 2.4 : c.competitive >= 70 ? 3.8 : 5.2;
+      const node = g
+        .append('g')
+        .attr('data-inv-scale', 'true')
+        .attr('data-x', pt[0].toFixed(2))
+        .attr('data-y', pt[1].toFixed(2))
+        .attr('data-zoom-show', String(minZoom))
+        .attr('transform', `translate(${pt[0].toFixed(2)},${pt[1].toFixed(2)})`)
+        .style('display', 'none');
+
+      if (off[0] !== 0 || off[1] !== 0) {
+        node.attr('data-spread-x', off[0].toFixed(2)).attr('data-spread-y', off[1].toFixed(2));
+      }
+
+      const labelOffset = Math.max(5.5, r * 0.55 + 3.5);
+      node
+        .append('text')
+        .attr('x', labelOffset.toFixed(1))
+        .attr('y', '0.5')
+        .attr('text-anchor', 'start')
+        .attr('dominant-baseline', 'central')
+        .attr('fill', isSelected ? '#0f172a' : '#1e3a5f')
+        .attr('font-family', FONT_SANS)
+        .attr('font-size', isSelected ? '9px' : '8px')
+        .attr('font-weight', isSelected ? '700' : '600')
+        .attr('paint-order', 'stroke')
+        .attr('stroke', '#ffffff')
+        .attr('stroke-width', '3.2')
+        .attr('stroke-linejoin', 'round')
+        .text(shortClubLabel(c));
+    }
   }
 
   private renderLabels(

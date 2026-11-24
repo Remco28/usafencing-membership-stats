@@ -398,6 +398,9 @@ class FencingMapApp {
         this.map.render(this.state);
         this.renderInspector();
       },
+      onZoomChange: () => {
+        if (this.state.selection?.kind === 'club') this.renderInspector();
+      },
     });
   }
 
@@ -1120,6 +1123,16 @@ class FencingMapApp {
         c.has_para ? 'Parafencing' : null,
       ].filter(Boolean) as string[];
 
+      const metro = c.cbsa_code
+        ? this.dataset.metros.find((m) => m.cbsa_code === c.cbsa_code) ?? null
+        : null;
+      const sameMetroClubs = c.cbsa_code
+        ? this.dataset.clubs
+            .filter((x) => x.cbsa_code === c.cbsa_code)
+            .sort((a, b) => b.competitive - a.competitive || b.total - a.total)
+        : [];
+      const currentZoom = this.map.getTransform().k;
+
       bodyEl.innerHTML = `
         <div class="inspector-entity-type">Fencing Club${c.abbreviation ? ` · ${esc(c.abbreviation)}` : ''}</div>
         <h3 class="inspector-entity-title">${esc(c.name)}</h3>
@@ -1142,11 +1155,19 @@ class FencingMapApp {
         </div>
 
         <dl class="detail-list">
-          <div class="detail-row"><dt>Census Metro Area</dt><dd>${esc(c.cbsa_title ?? 'Outside metro areas')}</dd></div>
-          <div class="detail-row"><dt>County</dt><dd>${esc(c.county ?? '—')}</dd></div>
-          <div class="detail-row"><dt>USA Fencing Region</dt><dd>${esc(c.region ?? '—')}</dd></div>
+          <div class="detail-row">
+            <dt>Census Metro Area</dt>
+            <dd>
+              ${
+                metro
+                  ? `<button type="button" class="inline-link" id="btn-club-metro">${esc(metro.display_name)}</button>`
+                  : esc(c.cbsa_title ?? 'Outside metro areas')
+              }
+            </dd>
+          </div>
+          ${c.county ? `<div class="detail-row"><dt>County</dt><dd>${esc(c.county)}</dd></div>` : ''}
+          ${c.region ? `<div class="detail-row"><dt>USA Fencing Region</dt><dd>${esc(c.region)}</dd></div>` : ''}
           <div class="detail-row"><dt>Nearest National Host</dt><dd>${esc(c.nearest_host_city ?? '—')} (${c.nearest_host_miles !== null ? `${Math.round(c.nearest_host_miles)} mi straight-line` : '—'})</dd></div>
-          <div class="detail-row"><dt>Location Source</dt><dd>${esc(SOURCE_LABELS[c.location_source] ?? c.location_source)}</dd></div>
         </dl>
 
         <div class="tag-row">
@@ -1158,12 +1179,63 @@ class FencingMapApp {
         </div>
 
         <div class="inspector-actions">
-          <button type="button" class="btn btn-sm" id="btn-club-zoom">Zoom to Club</button>
+          ${
+            currentZoom < 5.2
+              ? `<button type="button" class="btn btn-sm" id="btn-club-zoom">${currentZoom >= 2.0 ? 'Zoom Closer' : 'Zoom to Club'}</button>`
+              : ''
+          }
+          ${
+            currentZoom >= 1.4
+              ? `<button type="button" class="btn btn-sm" id="btn-club-reset">Reset Zoom</button>`
+              : ''
+          }
+        </div>
+
+        ${
+          sameMetroClubs.length > 1
+            ? `
+              <div class="sublist-heading">Clubs in ${esc(metro?.display_name ?? c.cbsa_title ?? 'this Metro')} (${sameMetroClubs.length})</div>
+              <ul class="mini-list mini-list-scroll">
+                ${sameMetroClubs
+                  .map(
+                    (peer) => `
+                      <li class="mini-list-item${peer.club_id === c.club_id ? ' is-active' : ''}" data-peer-club-id="${esc(peer.club_id)}">
+                        <span class="mini-list-name">${esc(peer.name)}</span>
+                        <span class="mini-list-detail is-inline">${peer.competitive} comp</span>
+                      </li>
+                    `,
+                  )
+                  .join('')}
+              </ul>
+            `
+            : ''
+        }
+
+        <div class="inspector-footnote">
+          Location source: ${esc(SOURCE_LABELS[c.location_source] ?? c.location_source)}
         </div>
       `;
 
       bodyEl.querySelector('#btn-club-zoom')?.addEventListener('click', () => {
-        this.map.flyTo(c.lat, c.lng, 6.5);
+        this.map.flyTo(c.lat, c.lng, currentZoom >= 2.0 ? Math.min(10, currentZoom * 1.65) : 6.2);
+      });
+      bodyEl.querySelector('#btn-club-reset')?.addEventListener('click', () => {
+        this.map.resetZoom();
+      });
+      bodyEl.querySelector('#btn-club-metro')?.addEventListener('click', () => {
+        if (metro) this.selectAndFocus({ kind: 'metro', data: metro });
+      });
+      bodyEl.querySelectorAll<HTMLElement>('[data-peer-club-id]').forEach((row) => {
+        row.addEventListener('click', () => {
+          const peer = this.dataset.clubs.find((x) => x.club_id === row.dataset.peerClubId);
+          if (!peer || peer.club_id === c.club_id) return;
+          this.state.selection = { kind: 'club', data: peer };
+          this.map.render(this.state);
+          this.renderInspector();
+          if (this.map.getTransform().k < 3.0) {
+            this.map.flyTo(peer.lat, peer.lng, 5.8);
+          }
+        });
       });
       return;
     }
@@ -1507,6 +1579,12 @@ class FencingMapApp {
       `;
     } else if (sel.kind === 'club') {
       const c = sel.data;
+      const peerCount = c.cbsa_code
+        ? this.dataset.clubs.filter((x) => x.cbsa_code === c.cbsa_code).length - 1
+        : 0;
+      const metroLabel = c.cbsa_code
+        ? this.dataset.metros.find((m) => m.cbsa_code === c.cbsa_code)?.display_name ?? c.cbsa_title
+        : null;
       this.tooltipEl.innerHTML = `
         <div class="tooltip-kicker">Club · ${esc([c.city, c.state].filter(Boolean).join(', '))}</div>
         <div class="tooltip-title">${esc(c.name)}</div>
@@ -1516,6 +1594,11 @@ class FencingMapApp {
           <span>% Competitive</span><span>${fmtPct(c.comp_share)}</span>
           <span>Division</span><span>${esc(c.division ?? '—')}</span>
         </div>
+        ${
+          peerCount > 0 && metroLabel
+            ? `<div class="tooltip-foot">+${peerCount} other club${peerCount === 1 ? '' : 's'} in ${esc(metroLabel)} · Click to browse</div>`
+            : ''
+        }
       `;
     } else {
       const h = sel.data;
